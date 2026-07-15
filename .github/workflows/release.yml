@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - id: version
+        name: Match tag to package version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$VERSION" = "$PACKAGE_VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Test (${{ matrix.os }})
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: minimal
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+      - run: python -m pip install --upgrade pip ".[test]"
+      - run: python -m pytest -q
+
+  python-package:
+    name: Build Python package
+    needs: [metadata, quality]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Build and validate
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+          cd dist
+          sha256sum * > SHA256SUMS-python.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-package
+          path: dist/*
+          if-no-files-found: error
+
+  linux-portable:
+    name: Build Linux portable package
+    needs: [metadata, quality]
+    runs-on: ubuntu-22.04
+    env:
+      STL_VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Linux Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+      - run: python -m pip install --upgrade pip ".[portable]"
+      - run: bash packaging/linux/build_linux.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-portable
+          path: |
+            release/*.tar.gz
+            release/*.tar.gz.sha256
+          if-no-files-found: error
+
+  windows-portable:
+    name: Build Windows portable package
+    needs: [metadata, quality]
+    runs-on: windows-2022
+    env:
+      STL_VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip ".[portable]"
+      - shell: powershell
+        run: .\packaging\windows\build_windows.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-portable
+          path: |
+            release/*.zip
+            release/*.zip.sha256
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [metadata, python-package, linux-portable, windows-portable]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: List release assets
+        run: find release-assets -maxdepth 1 -type f -printf "%f\n" | sort
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: SpatioTemporal Labeler ${{ needs.metadata.outputs.version }}
+          generate_release_notes: true
+          files: release-assets/*
+          fail_on_unmatched_files: true
+
+  pypi:
+    name: Publish to PyPI
+    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+    needs: [metadata, python-package, github-release]
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-package
+          path: dist
+      - name: Remove checksum from upload set
+        run: rm dist/SHA256SUMS-python.txt
+      - uses: pypa/gh-action-pypi-publish@release/v1

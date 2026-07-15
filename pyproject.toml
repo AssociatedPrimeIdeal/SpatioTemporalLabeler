@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatiotemporal-labeler"
+version = "0.1.0"
+description = "Cross-platform 3D+t medical image segmentation editor"
+readme = "README.md"
+license = "GPL-3.0-only"
+authors = [{ name = "AssociatedPrimeIdeal" }]
+requires-python = ">=3.9"
+keywords = ["medical-imaging", "segmentation", "nrrd", "nifti", "pyside6", "vtk", "4d", "4d-flow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "nibabel>=5.2",
+    "numpy>=1.24",
+    "pynrrd>=1.0",
+    "PySide6>=6.6",
+    "pyqtgraph>=0.13",
+    "scikit-image>=0.21",
+    "scipy>=1.10",
+    "vtk>=9.2",
+]
+
+[project.optional-dependencies]
+build = ["build>=1.2", "twine>=5.1"]
+portable = ["pyinstaller>=6.10,<7"]
+test = ["pytest>=7"]
+dev = ["build>=1.2", "pyinstaller>=6.10,<7", "pytest>=7", "twine>=5.1"]
+
+[project.gui-scripts]
+spatiotemporal-labeler = "spatiotemporal_labeler.app:main"
+
+[project.urls]
+Homepage = "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler"
+Repository = "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler.git"
+Issues = "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/issues"
+Releases = "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+spatiotemporal_labeler = ["assets/*.png"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

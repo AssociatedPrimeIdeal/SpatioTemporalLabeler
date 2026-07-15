@@ -1,0 +1,10 @@
+include CHANGELOG.md
+prune .github
+prune docs
+prune examples
+prune packaging
+prune tests
+include docs/assets/application.png
+exclude main.py
+global-exclude __pycache__
+global-exclude *.py[cod]
