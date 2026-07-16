@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-VERSION="${STL_VERSION:-0.2.0}"
+VERSION="${STL_VERSION:-0.2.1}"
 PACKAGE_NAME="SpatioTemporalLabeler-${VERSION}-linux-x86_64"
 RELEASE_ROOT="$PROJECT_ROOT/release"
 PACKAGE_ROOT="$RELEASE_ROOT/$PACKAGE_NAME"
