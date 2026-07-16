@@ -1300,7 +1300,9 @@ class MainWindow(QMainWindow):
         if mask is None:
             return
         definitions = self._labels_for(mask)
-        suggested = max(definitions, default=0) + 1
+        suggested = 1
+        while suggested in definitions:
+            suggested += 1
         maximum = min(int(np.iinfo(mask.data.dtype).max), 2_147_483_647)
         value, accepted = QInputDialog.getInt(
             self, self._tr("add_label"), self._tr("label_id"), suggested, 1, maximum

@@ -52,6 +52,36 @@ def finish_window(window, mask):
     window.deleteLater()
 
 
+def test_add_label_suggests_the_first_unused_positive_value(monkeypatch):
+    image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window._mask_labels[id(mask)] = {
+        value: default_label(value) for value in (1, 2, 3, 4, 7, 8)
+    }
+    suggested_values = []
+
+    def get_int(_parent, _title, _label, value, _minimum, _maximum):
+        suggested_values.append(value)
+        return value, True
+
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QInputDialog.getInt", get_int
+    )
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QInputDialog.getText",
+        lambda *_args, **_kwargs: ("Label 5", True),
+    )
+
+    window._add_label()
+
+    assert suggested_values == [5]
+    assert 5 in window.active_labels
+    assert window.active_label_value == 5
+    finish_window(window, mask)
+
+
 def test_threshold_constrains_brush_and_bypass_ignores_it():
     image_data = np.zeros((7, 7, 1, 2), dtype=np.float32)
     image_data[3:, :, :, :] = 10.0
