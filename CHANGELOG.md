@@ -2,6 +2,24 @@
 
 All notable changes to SpatioTemporal Labeler are documented in this file.
 
+## 0.1.5 - 2026-07-16
+
+### Added
+
+- Selectable X-Y/X-Z/Y-Z/X-T/Y-T/Z-T planes for other-image previews, with automatic plane following during Shift-location.
+- Persistent 3D rendering controls for clinical, matte, and glossy styles, lighting, surface smoothing, and detail level.
+
+### Changed
+
+- Middle-button dragging now adjusts window width horizontally and window level vertically; Shift+left drag remains the 2D pan gesture.
+- Threshold lower and upper controls now use percentages mapped into the image's real intensity range.
+- Time navigation coalesces complete visible-label 3D updates to the latest requested frame with adaptive throttling.
+
+### Performance
+
+- Window level/width changes update only grayscale levels instead of rebuilding slices and overlays.
+- 3D cursor rendering is coalesced, threshold previews use per-frame caches, and spatial threshold operations calculate only affected frames.
+
 ## 0.1.0 - 2026-07-15
 
 ### Added

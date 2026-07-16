@@ -165,11 +165,13 @@ def test_double_click_does_not_emit_a_single_click_stroke():
     assert double_clicks == [(4, 7)]
 
 
-def test_middle_drag_requests_pan_without_starting_a_stroke():
+def test_middle_drag_requests_window_level_without_panning_or_stroking():
     ensure_application()
     item = EditableImageItem()
+    adjustments = []
     pans = []
     strokes = []
+    item.windowLevelRequested.connect(lambda width, level: adjustments.append((width, level)))
     item.panRequested.connect(lambda h, v: pans.append((h, v)))
     item.strokeMoved.connect(lambda h, v, erase: strokes.append((h, v, erase)))
     event = DragEvent(Qt.MouseButton.MiddleButton)
@@ -177,5 +179,22 @@ def test_middle_drag_requests_pan_without_starting_a_stroke():
     item.mouseDragEvent(event)
 
     assert event.accepted
-    assert pans == [(3.0, 4.0)]
+    assert adjustments == [(3.0, 4.0)]
+    assert pans == []
     assert strokes == []
+
+
+def test_shift_left_drag_still_requests_pan():
+    ensure_application()
+    item = EditableImageItem()
+    pans = []
+    adjustments = []
+    item.panRequested.connect(lambda h, v: pans.append((h, v)))
+    item.windowLevelRequested.connect(lambda width, level: adjustments.append((width, level)))
+    event = DragEvent(Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+
+    item.mouseDragEvent(event)
+
+    assert event.accepted
+    assert pans == [(3.0, 4.0)]
+    assert adjustments == []

@@ -16,20 +16,21 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 ## Features
 
 - Linked X-Y, X-Z, Y-Z, and selectable X-T/Y-T/Z-T views
-- Throttled 3D rendering that follows time-slider movement
+- Coalesced all-label 3D updates during time navigation
 - Multiple image sequences, label sequences, and integer labels
-- Unified image/label import classification, drag-and-drop, and collapsible previews for other loaded images
+- Unified image/label import classification, drag-and-drop, and selectable-plane previews for other loaded images
 - Physical round or square brush and eraser footprints
 - Closed-contour raster drawing with interior fill
-- Right-drag temporary erase, Shift-hover linked positioning, and Shift-drag/middle-drag panning
+- Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width
 - Optional all-time-frame spatial editing as one undoable operation
-- Independent threshold mask with live lower/upper sliders, automatic methods, preview, and bypass
+- Independent threshold mask with percentage lower/upper sliders, automatic methods, preview, and bypass
 - Live window level/width sliders in a separate display panel
 - 2D/3D seed region growing that stops at other labels
 - Per-label morphology with physical `mm` radii and `mm³` component volumes
 - Physical signed-distance interpolation between user-selected label keyframes
 - Automatic all-frame replication or selected-frame placement when mapping 3D labels to a 4D image
 - Independent closed, smoothed, decimated surface rendering for each label
+- Persistent 3D style, lighting, smoothing, and detail controls in Settings
 - Metadata-preserving read/write for 3D/4D NRRD and NIfTI files
 - English and Simplified Chinese interface
 
@@ -51,13 +52,13 @@ Each package also contains per-user install and uninstall scripts. No administra
 Every release includes a pure Python wheel and source distribution. Install the current release directly from GitHub:
 
 ```bash
-python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.1.0/spatiotemporal_labeler-0.1.0-py3-none-any.whl"
+python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.1.5/spatiotemporal_labeler-0.1.5-py3-none-any.whl"
 ```
 
 Alternatively, download the wheel from the release and install it locally:
 
 ```bash
-python -m pip install spatiotemporal_labeler-0.1.0-py3-none-any.whl
+python -m pip install spatiotemporal_labeler-0.1.5-py3-none-any.whl
 ```
 
 Launch the installed application with `spatiotemporal-labeler`. Python 3.9 or newer is required. Runtime dependencies are installed automatically by pip.
@@ -87,7 +88,7 @@ spatiotemporal-labeler
 | Right drag | Temporarily erase without changing the selected tool |
 | Hold Shift and move | Move the linked spatial cursor without editing |
 | Shift + left drag | Pan a 2D view |
-| Middle drag | Pan a 2D view |
+| Middle drag | Adjust window width horizontally and window level vertically |
 | Ctrl + wheel | Zoom a 2D view |
 | Shift + wheel | Change brush or eraser diameter |
 | Wheel in a spatial view | Change its orthogonal slice |

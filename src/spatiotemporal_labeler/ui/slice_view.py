@@ -148,6 +148,7 @@ class EditableImageItem(pg.ImageItem):
     doubleClicked = Signal(int, int)
     hoverChanged = Signal(int, int, bool)
     panRequested = Signal(float, float)
+    windowLevelRequested = Signal(float, float)
 
     def __init__(self) -> None:
         super().__init__()
@@ -164,7 +165,17 @@ class EditableImageItem(pg.ImageItem):
         return int(np.floor(position.x())), int(np.floor(position.y()))
 
     def mouseDragEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
-        pan_requested = event.button() == Qt.MouseButton.MiddleButton or (
+        if event.button() == Qt.MouseButton.MiddleButton:
+            if not event.isStart() and not event.isFinish():
+                current = event.scenePos() if hasattr(event, "scenePos") else event.pos()
+                previous = (
+                    event.lastScenePos() if hasattr(event, "lastScenePos") else event.lastPos()
+                )
+                delta = current - previous
+                self.windowLevelRequested.emit(float(delta.x()), float(delta.y()))
+            event.accept()
+            return
+        pan_requested = (
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
         )
@@ -241,6 +252,7 @@ class SliceView(pg.PlotWidget):
     sliceStepRequested = Signal(str, int)
     brushSizeStepRequested = Signal(int)
     hoverMoved = Signal(str, int, int, bool)
+    windowLevelDragged = Signal(float, float)
 
     def __init__(self, plane: str, parent: Any = None) -> None:
         super().__init__(parent=parent, background="#101719")
@@ -304,6 +316,7 @@ class SliceView(pg.PlotWidget):
         )
         self.image_item.hoverChanged.connect(self._hover_changed)
         self.image_item.panRequested.connect(self._pan)
+        self.image_item.windowLevelRequested.connect(self.windowLevelDragged.emit)
 
     def _hover_changed(self, h: int, v: int, visible: bool) -> None:
         self.footprint.show_at(h, v, visible)
@@ -325,6 +338,9 @@ class SliceView(pg.PlotWidget):
 
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
+
+    def set_levels(self, levels: tuple[float, float]) -> None:
+        self.image_item.setLevels(levels)
 
     def set_slice(
         self,
@@ -431,6 +447,7 @@ class TemporalView(pg.PlotWidget):
     viewDoubleClicked = Signal(str)
     brushSizeStepRequested = Signal(int)
     hoverMoved = Signal(str, int, int, bool)
+    windowLevelDragged = Signal(float, float)
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent=parent, background="#101719")
@@ -481,6 +498,7 @@ class TemporalView(pg.PlotWidget):
         )
         self.image_item.hoverChanged.connect(self._hover_changed)
         self.image_item.panRequested.connect(self._pan)
+        self.image_item.windowLevelRequested.connect(self.windowLevelDragged.emit)
 
     def _hover_changed(self, h: int, v: int, visible: bool) -> None:
         self.footprint.show_at(h, v, visible)
@@ -502,6 +520,9 @@ class TemporalView(pg.PlotWidget):
 
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
+
+    def set_levels(self, levels: tuple[float, float]) -> None:
+        self.image_item.setLevels(levels)
 
     def set_sequence_slice(
         self,

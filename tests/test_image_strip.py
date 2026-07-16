@@ -17,7 +17,8 @@ def make_sequence(name):
         origin_ras=(0.0, 0.0, 0.0),
         direction_ras=np.eye(3),
     )
-    sequence = Sequence4D(np.ones((4, 5, 2, 1), dtype=np.float32), {}, transform)
+    data = np.arange(4 * 5 * 3 * 6, dtype=np.float32).reshape((4, 5, 3, 6))
+    sequence = Sequence4D(data, {}, transform)
     sequence.path = name
     return sequence
 
@@ -41,3 +42,25 @@ def test_other_image_strip_collapses_instead_of_closing(tmp_path):
     assert strip.maximumWidth() == 32
     assert strip.content.isHidden()
     assert states == [True]
+
+
+def test_other_image_preview_plane_is_selectable(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    strip = ImagePreviewStrip()
+    changed = []
+    strip.planeChanged.connect(changed.append)
+    strip.rebuild(images, active_index=0)
+    cursor = (1, 2, 1, 4)
+
+    strip.set_plane("X-Z")
+    strip.update_images(images, cursor)
+
+    assert strip.plane == "X-Z"
+    assert changed == ["X-Z"]
+    assert np.array_equal(strip._plots[1].item.image, images[1].data[:, 2, :, 4].T)
+
+    strip.set_plane("Y-T")
+    strip.update_images(images, cursor)
+
+    assert np.array_equal(strip._plots[1].item.image, images[1].data[1, :, 1, :].T)

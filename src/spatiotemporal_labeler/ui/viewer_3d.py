@@ -33,6 +33,42 @@ from vtkmodules.vtkRenderingCore import (
 
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
+from .render_settings import DETAIL_REDUCTION, RenderSettings
+
+
+STYLE_PRESETS = {
+    "clinical": {
+        "ambient": 0.18,
+        "diffuse": 0.78,
+        "specular": 0.34,
+        "specular_power": 36.0,
+        "key_to_fill": 2.8,
+        "key_to_head": 3.5,
+        "background": (0.018, 0.026, 0.029),
+        "background_2": (0.065, 0.078, 0.082),
+    },
+    "matte": {
+        "ambient": 0.28,
+        "diffuse": 0.74,
+        "specular": 0.08,
+        "specular_power": 12.0,
+        "key_to_fill": 1.5,
+        "key_to_head": 2.0,
+        "background": (0.045, 0.048, 0.052),
+        "background_2": (0.090, 0.095, 0.100),
+    },
+    "glossy": {
+        "ambient": 0.12,
+        "diffuse": 0.72,
+        "specular": 0.72,
+        "specular_power": 68.0,
+        "key_to_fill": 4.2,
+        "key_to_head": 5.0,
+        "background": (0.012, 0.017, 0.024),
+        "background_2": (0.045, 0.058, 0.075),
+    },
+}
+
 
 @dataclass
 class SegmentPipeline:
@@ -80,11 +116,11 @@ class Mask3DViewer(QWidget):
         self.cursor_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
         render_window.AddRenderer(self.cursor_renderer)
 
-        light_kit = vtkLightKit()
-        light_kit.SetKeyLightIntensity(0.82)
-        light_kit.SetKeyToFillRatio(2.8)
-        light_kit.SetKeyToHeadRatio(3.5)
-        light_kit.AddLightsToRenderer(self.renderer)
+        self.light_kit = vtkLightKit()
+        self.light_kit.SetKeyLightIntensity(0.82)
+        self.light_kit.SetKeyToFillRatio(2.8)
+        self.light_kit.SetKeyToHeadRatio(3.5)
+        self.light_kit.AddLightsToRenderer(self.renderer)
 
         self.image = vtkImageData()
         self.image.SetDimensions(1, 1, 1)
@@ -92,6 +128,8 @@ class Mask3DViewer(QWidget):
         self.image.GetPointData().GetScalars().SetTuple1(0, 0)
 
         self.segment_pipelines: dict[int, SegmentPipeline] = {}
+        self.render_settings = RenderSettings()
+        self._apply_scene_settings()
 
         self.cursor_source = vtkSphereSource()
         self.cursor_source.SetThetaResolution(28)
@@ -137,12 +175,66 @@ class Mask3DViewer(QWidget):
         self._has_camera = False
         self._initialized = False
         self._cursor_state: tuple[float, float, float, float] | None = None
+        self._last_cursor_render_time = 0.0
+        self._cursor_throttle_ms = 50
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.setSingleShot(True)
+        self._cursor_timer.timeout.connect(self._render_cursor)
         self._last_apply_time = 0.0
+        self._last_apply_duration_ms = 0.0
         self._throttle_ms = 75
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(self._throttle_ms)
         self._timer.timeout.connect(self._apply_pending)
+
+    def set_render_settings(
+        self, settings: RenderSettings, render: bool = True
+    ) -> None:
+        settings = RenderSettings.normalized(settings.as_dict())
+        geometry_changed = (
+            settings.smoothing != self.render_settings.smoothing
+            or settings.detail != self.render_settings.detail
+        )
+        self.render_settings = settings
+        self._apply_scene_settings()
+        for pipeline in self.segment_pipelines.values():
+            self._configure_pipeline(pipeline)
+            if geometry_changed:
+                pipeline.smoother.Modified()
+                pipeline.decimator.Modified()
+        if self._initialized and render:
+            self.vtk_widget.GetRenderWindow().Render()
+            self._last_cursor_render_time = monotonic()
+
+    def _apply_scene_settings(self) -> None:
+        preset = STYLE_PRESETS[self.render_settings.style]
+        self.renderer.SetBackground(*preset["background"])
+        self.renderer.SetBackground2(*preset["background_2"])
+        self.light_kit.SetKeyLightIntensity(
+            0.82 * float(self.render_settings.lighting) / 100.0
+        )
+        self.light_kit.SetKeyToFillRatio(preset["key_to_fill"])
+        self.light_kit.SetKeyToHeadRatio(preset["key_to_head"])
+        self.light_kit.Update()
+
+    def _configure_pipeline(self, pipeline: SegmentPipeline) -> None:
+        pipeline.smoother.SetNumberOfIterations(max(1, self.render_settings.smoothing))
+        pipeline.decimator.SetInputConnection(
+            pipeline.smoother.GetOutputPort()
+            if self.render_settings.smoothing > 0
+            else pipeline.surface.GetOutputPort()
+        )
+        pipeline.decimator.SetTargetReduction(
+            DETAIL_REDUCTION[self.render_settings.detail]
+        )
+        preset = STYLE_PRESETS[self.render_settings.style]
+        material = pipeline.actor.GetProperty()
+        material.SetInterpolationToPhong()
+        material.SetAmbient(preset["ambient"])
+        material.SetDiffuse(preset["diffuse"])
+        material.SetSpecular(preset["specular"])
+        material.SetSpecularPower(preset["specular_power"])
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
@@ -166,6 +258,23 @@ class Mask3DViewer(QWidget):
             self.renderer.GetActiveCamera().Zoom(1.30)
             self._has_camera = True
         self.vtk_widget.GetRenderWindow().Render()
+        self._cursor_timer.stop()
+        self._last_cursor_render_time = monotonic()
+
+    def _schedule_cursor_render(self) -> None:
+        if self._cursor_timer.isActive():
+            return
+        elapsed_ms = (monotonic() - self._last_cursor_render_time) * 1000.0
+        delay = 0 if self._last_cursor_render_time == 0.0 else max(
+            0, int(np.ceil(self._cursor_throttle_ms - elapsed_ms))
+        )
+        self._cursor_timer.start(delay)
+
+    def _render_cursor(self) -> None:
+        if not self._initialized:
+            return
+        self.vtk_widget.GetRenderWindow().Render()
+        self._last_cursor_render_time = monotonic()
 
     def set_cursor(
         self,
@@ -198,7 +307,7 @@ class Mask3DViewer(QWidget):
                 self.cursor_source.Modified()
             self.cursor_actor.SetVisibility(True)
         if self._initialized and changed:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._schedule_cursor_render()
 
     def set_mask(
         self,
@@ -216,6 +325,8 @@ class Mask3DViewer(QWidget):
                 pipeline.actor.SetVisibility(False)
             if self._initialized:
                 self.vtk_widget.GetRenderWindow().Render()
+                self._cursor_timer.stop()
+                self._last_cursor_render_time = monotonic()
             return
         if labels is None:
             labels = {
@@ -244,17 +355,19 @@ class Mask3DViewer(QWidget):
             return
 
         elapsed_ms = (monotonic() - self._last_apply_time) * 1000.0
-        if self._last_apply_time == 0.0 or elapsed_ms >= self._throttle_ms:
-            # Rendering from the input event prevents a busy slider from starving
-            # the timer and guarantees progressive 3D updates during the drag.
-            self._timer.stop()
-            self._apply_pending()
-        elif not self._timer.isActive():
-            self._timer.start(max(1, int(np.ceil(self._throttle_ms - elapsed_ms))))
+        if not self._timer.isActive():
+            cooldown_ms = max(
+                float(self._throttle_ms), self._last_apply_duration_ms * 0.75
+            )
+            delay = 0 if self._last_apply_time == 0.0 else max(
+                1, int(np.ceil(cooldown_ms - elapsed_ms))
+            )
+            self._timer.start(delay)
 
     def _apply_pending(self) -> None:
         if self._pending is None:
             return
+        started = monotonic()
         frame, spacing, origin, direction, definitions = self._pending
         self._pending = None
         dimensions_changed = tuple(self.image.GetDimensions()) != tuple(frame.shape)
@@ -297,7 +410,11 @@ class Mask3DViewer(QWidget):
             self._has_camera = True
         if self._initialized:
             self.vtk_widget.GetRenderWindow().Render()
-        self._last_apply_time = monotonic()
+            self._cursor_timer.stop()
+            self._last_cursor_render_time = monotonic()
+        completed = monotonic()
+        self._last_apply_duration_ms = (completed - started) * 1000.0
+        self._last_apply_time = completed
 
     def _segment_pipeline(self, definition: LabelDefinition) -> SegmentPipeline:
         existing = self.segment_pipelines.get(definition.value)
@@ -326,7 +443,7 @@ class Mask3DViewer(QWidget):
 
         smoother = vtkWindowedSincPolyDataFilter()
         smoother.SetInputConnection(surface.GetOutputPort())
-        smoother.SetNumberOfIterations(8)
+        smoother.SetNumberOfIterations(self.render_settings.smoothing)
         smoother.SetPassBand(0.10)
         smoother.BoundarySmoothingOff()
         smoother.FeatureEdgeSmoothingOff()
@@ -335,7 +452,7 @@ class Mask3DViewer(QWidget):
 
         decimator = vtkDecimatePro()
         decimator.SetInputConnection(smoother.GetOutputPort())
-        decimator.SetTargetReduction(0.35)
+        decimator.SetTargetReduction(DETAIL_REDUCTION[self.render_settings.detail])
         decimator.PreserveTopologyOn()
         decimator.SplittingOff()
 
@@ -355,12 +472,10 @@ class Mask3DViewer(QWidget):
         red, green, blue = (channel / 255.0 for channel in definition.color)
         actor.GetProperty().SetColor(red, green, blue)
         actor.GetProperty().EdgeVisibilityOff()
-        actor.GetProperty().SetInterpolationToPBR()
-        actor.GetProperty().SetMetallic(0.0)
-        actor.GetProperty().SetRoughness(0.40)
         self.renderer.AddActor(actor)
         pipeline = SegmentPipeline(
             threshold, pad, surface, smoother, decimator, normals, mapper, actor
         )
+        self._configure_pipeline(pipeline)
         self.segment_pipelines[definition.value] = pipeline
         return pipeline

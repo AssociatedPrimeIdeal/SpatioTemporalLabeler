@@ -50,6 +50,7 @@ from spatiotemporal_labeler.model import (
     store_labels,
 )
 from spatiotemporal_labeler.tools import (
+    GLOBAL_METHODS,
     apply_disk,
     apply_label_morphology,
     apply_square,
@@ -69,6 +70,7 @@ from .interpolation_panel import InterpolationPanel
 from .label_panel import LabelPanel
 from .morphology_panel import MorphologyPanel
 from .region_grow_panel import RegionGrowPanel
+from .render_settings import RenderSettings
 from .settings_dialog import DEFAULT_SHORTCUTS, SettingsDialog
 from .slice_view import SliceView, TemporalView
 from .threshold_panel import ThresholdPanel
@@ -105,6 +107,14 @@ class MainWindow(QMainWindow):
             key: str(self.settings.value(f"shortcuts/{key}", value))
             for key, value in DEFAULT_SHORTCUTS.items()
         }
+        self.render_settings = RenderSettings.normalized(
+            {
+                "style": self.settings.value("render3d/style", "clinical"),
+                "lighting": self.settings.value("render3d/lighting", 100),
+                "smoothing": self.settings.value("render3d/smoothing", 8),
+                "detail": self.settings.value("render3d/detail", "balanced"),
+            }
+        )
         self.resize(1680, 960)
         self.setMinimumSize(1120, 700)
         self.setAcceptDrops(True)
@@ -117,6 +127,8 @@ class MainWindow(QMainWindow):
         self._image_value_range = (0.0, 1.0)
         self._threshold_cache: np.ndarray | None = None
         self._threshold_signature: tuple[object, ...] | None = None
+        self._threshold_frame_cache: dict[int, np.ndarray] = {}
+        self._threshold_frame_signature: tuple[object, ...] | None = None
         self._all_frames_held = False
         self._picker_held = False
         self._threshold_bypass_held = False
@@ -135,6 +147,7 @@ class MainWindow(QMainWindow):
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
         self._build_ui()
+        self.viewer_3d.set_render_settings(self.render_settings, render=False)
         self._build_actions()
         self._apply_style()
         self._set_language(self.language)
@@ -215,6 +228,7 @@ class MainWindow(QMainWindow):
         self.temporal_view.viewDoubleClicked.connect(self._view_double_clicked)
         self.temporal_view.brushSizeStepRequested.connect(self._adjust_brush_size)
         self.temporal_view.hoverMoved.connect(self._view_hovered)
+        self.temporal_view.windowLevelDragged.connect(self._adjust_window_level)
         temporal_layout.addWidget(self.temporal_view, 1)
         grid.addWidget(self.temporal_panel, 1, 1)
         grid.setRowStretch(0, 1)
@@ -225,6 +239,7 @@ class MainWindow(QMainWindow):
         self.image_previews = ImagePreviewStrip()
         self.image_previews.imageActivated.connect(self.image_combo.setCurrentIndex)
         self.image_previews.collapsedChanged.connect(self._image_previews_collapsed)
+        self.image_previews.planeChanged.connect(self._preview_plane_changed)
         self.image_previews.hide()
         slices_layout.addWidget(self.image_previews)
         splitter.addWidget(slices)
@@ -276,6 +291,7 @@ class MainWindow(QMainWindow):
             view.sliceStepRequested.connect(self._step_slice)
             view.brushSizeStepRequested.connect(self._adjust_brush_size)
             view.hoverMoved.connect(self._view_hovered)
+            view.windowLevelDragged.connect(self._adjust_window_level)
         self.setCentralWidget(root)
 
         self.threshold_dock = QDockWidget(self)
@@ -606,15 +622,26 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self._tr("load_start"))
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.language, self.shortcuts, self)
+        dialog = SettingsDialog(
+            self.language,
+            self.shortcuts,
+            self,
+            render_settings=self.render_settings,
+        )
+        dialog.renderSettingsChanged.connect(self.viewer_3d.set_render_settings)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.viewer_3d.set_render_settings(self.render_settings)
             return
         language, shortcuts = dialog.values()
+        self.render_settings = dialog.render_values()
         self.shortcuts = shortcuts
         for key, value in shortcuts.items():
             self.settings.setValue(f"shortcuts/{key}", value)
         self._apply_shortcuts()
         self._set_language(language)
+        for key, value in self.render_settings.as_dict().items():
+            self.settings.setValue(f"render3d/{key}", value)
+        self.viewer_3d.set_render_settings(self.render_settings)
 
     def _apply_shortcuts(self) -> None:
         if not hasattr(self, "tool_actions"):
@@ -684,7 +711,7 @@ class MainWindow(QMainWindow):
         if self.cursor[3] == previous:
             return
         self.refresh_views()
-        self._refresh_3d()
+        self._refresh_navigation_3d()
 
     def _sync_window_controls(self) -> None:
         low, high = self._levels
@@ -695,11 +722,25 @@ class MainWindow(QMainWindow):
     def _window_level_changed(self, center: float, width: float) -> None:
         width = max(float(width), 1e-9)
         self._levels = (center - width * 0.5, center + width * 0.5)
-        self.refresh_views()
+        for view in [*self.slice_views.values(), self.temporal_view]:
+            view.set_levels(self._levels)
+
+    def _adjust_window_level(self, delta_width: float, delta_level: float) -> None:
+        data_low, data_high = self._image_value_range
+        span = max(float(data_high - data_low), 1e-9)
+        low, high = self._levels
+        center = (low + high) * 0.5 - float(delta_level) * span / 200.0
+        width = high - low + float(delta_width) * span / 200.0
+        center = float(np.clip(center, data_low, data_high))
+        width = float(np.clip(width, max(span / 1000.0, 1e-9), span * 2.0))
+        self.window_level_panel.set_values(center, width)
+        self._window_level_changed(center, width)
 
     def _invalidate_threshold(self) -> None:
         self._threshold_cache = None
         self._threshold_signature = None
+        self._threshold_frame_cache.clear()
+        self._threshold_frame_signature = None
 
     def _threshold_changed(self) -> None:
         self._cancel_pending_contour(silent=True)
@@ -737,26 +778,54 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, self._tr("threshold_failed"), str(error))
 
-    def _threshold_selection(self) -> np.ndarray | None:
+    def _threshold_parameters(
+        self,
+    ) -> tuple[Sequence4D, str, float, float, int, tuple[object, ...]] | None:
         image = self.active_image
         if image is None or not self.threshold_panel.enabled.isChecked():
             return None
+        lower, upper = self.threshold_panel.intensity_bounds
+        method = self.threshold_panel.method_key
+        radius = int(self.threshold_panel.radius.value())
         signature = (
             id(image),
-            self.threshold_panel.method_key,
-            float(self.threshold_panel.lower.value()),
-            float(self.threshold_panel.upper.value()),
-            int(self.threshold_panel.radius.value()),
+            method,
+            lower,
+            upper,
+            radius,
         )
-        if self._threshold_cache is None or signature != self._threshold_signature:
-            self._threshold_cache = build_threshold_mask(
-                image.data,
-                self.threshold_panel.method_key,
-                float(self.threshold_panel.lower.value()),
-                float(self.threshold_panel.upper.value()),
-                int(self.threshold_panel.radius.value()),
+        return image, method, lower, upper, radius, signature
+
+    def _threshold_frame(self, frame: int) -> np.ndarray | None:
+        parameters = self._threshold_parameters()
+        if parameters is None:
+            return None
+        image, method, lower, upper, radius, signature = parameters
+        if signature != self._threshold_frame_signature:
+            self._threshold_frame_cache.clear()
+            self._threshold_frame_signature = signature
+        frame = int(np.clip(frame, 0, image.frame_count - 1))
+        if frame not in self._threshold_frame_cache:
+            self._threshold_frame_cache[frame] = build_threshold_mask(
+                image.data[..., frame], method, lower, upper, radius
             )
+        return self._threshold_frame_cache[frame]
+
+    def _threshold_selection(self) -> np.ndarray | None:
+        parameters = self._threshold_parameters()
+        if parameters is None:
+            return None
+        image, _method, _lower, _upper, _radius, signature = parameters
+        if self._threshold_cache is None or signature != self._threshold_signature:
+            selection = np.empty(image.data.shape, dtype=bool)
+            for frame in range(image.frame_count):
+                selection[..., frame] = self._threshold_frame(frame)
+            self._threshold_cache = selection
             self._threshold_signature = signature
+            self._threshold_frame_cache = {
+                frame: selection[..., frame] for frame in range(image.frame_count)
+            }
+            self._threshold_frame_signature = signature
         return self._threshold_cache
 
     def _toggle_image_previews(self, enabled: bool) -> None:
@@ -769,6 +838,9 @@ class MainWindow(QMainWindow):
         self.image_previews_action.blockSignals(False)
         if not collapsed:
             self.image_previews.update_images(self.images, tuple(self.cursor))
+
+    def _preview_plane_changed(self, _plane: str) -> None:
+        self.image_previews.update_images(self.images, tuple(self.cursor))
 
     def _rebuild_image_previews(self) -> None:
         if not hasattr(self, "image_previews_action"):
@@ -1184,6 +1256,22 @@ class MainWindow(QMainWindow):
             return data[:, y, :, t]
         return data[x, :, :, t]
 
+    def _extract_spatial_frame(self, data: np.ndarray, plane: str) -> np.ndarray:
+        x, y, z = self.cursor[:3]
+        if plane == "X-Y":
+            return data[:, :, z]
+        if plane == "X-Z":
+            return data[:, y, :]
+        return data[x, :, :]
+
+    def _extract_temporal_line(self, data: np.ndarray, mode: str) -> np.ndarray:
+        x, y, z = self.cursor[:3]
+        if mode == "X-T":
+            return data[:, y, z]
+        if mode == "Y-T":
+            return data[x, :, z]
+        return data[x, y, :]
+
     def refresh_views(self, update_3d: bool = False) -> None:
         image = self.active_image
         if image is None:
@@ -1191,14 +1279,34 @@ class MainWindow(QMainWindow):
             self.viewer_3d.set_cursor(None)
             return
         self._clip_cursor()
+        x, y, z, t = self.cursor
         mask = self.active_mask
         labels = self.active_labels
-        threshold = self._threshold_selection()
-        show_threshold = threshold is not None and self.threshold_panel.preview.isChecked()
+        show_threshold = (
+            self.threshold_panel.enabled.isChecked()
+            and self.threshold_panel.preview.isChecked()
+        )
+        threshold_parameters = self._threshold_parameters() if show_threshold else None
+        threshold_method = threshold_parameters[1] if threshold_parameters is not None else None
+        bounds_only_threshold = threshold_method == "manual" or threshold_method in GLOBAL_METHODS
+        threshold_frame = (
+            self._threshold_frame(t)
+            if threshold_parameters is not None and not bounds_only_threshold
+            else None
+        )
         for plane, view in self.slice_views.items():
             h_axis, v_axis, fixed_axis = PLANE_AXES[plane]
+            image_plane = self._extract_spatial(image, plane)
+            threshold_plane = None
+            if threshold_parameters is not None:
+                _image, method, lower, upper, radius, _signature = threshold_parameters
+                threshold_plane = (
+                    build_threshold_mask(image_plane, method, lower, upper, radius)
+                    if bounds_only_threshold
+                    else self._extract_spatial_frame(threshold_frame, plane)
+                )
             view.set_slice(
-                self._extract_spatial(image, plane),
+                image_plane,
                 self._extract_spatial(mask, plane) if mask is not None else None,
                 (image.spacing_xyz[h_axis], image.spacing_xyz[v_axis]),
                 self._levels,
@@ -1206,25 +1314,34 @@ class MainWindow(QMainWindow):
                 self.cursor[fixed_axis],
                 labels,
                 (self.cursor[h_axis], self.cursor[v_axis]),
-                self._extract_spatial_data(threshold, plane) if show_threshold else None,
+                threshold_plane,
             )
         mode = self.temporal_mode.currentText()
-        x, y, z, t = self.cursor
         if mode == "X-T":
             image_temporal = image.data[:, y, z, :]
             mask_temporal = mask.data[:, y, z, :] if mask is not None else None
-            threshold_temporal = threshold[:, y, z, :] if show_threshold else None
             spacing, fixed = image.spacing_xyz[0], f"Y {y + 1}, Z {z + 1}"
         elif mode == "Y-T":
             image_temporal = image.data[x, :, z, :]
             mask_temporal = mask.data[x, :, z, :] if mask is not None else None
-            threshold_temporal = threshold[x, :, z, :] if show_threshold else None
             spacing, fixed = image.spacing_xyz[1], f"X {x + 1}, Z {z + 1}"
         else:
             image_temporal = image.data[x, y, :, :]
             mask_temporal = mask.data[x, y, :, :] if mask is not None else None
-            threshold_temporal = threshold[x, y, :, :] if show_threshold else None
             spacing, fixed = image.spacing_xyz[2], f"X {x + 1}, Y {y + 1}"
+        threshold_temporal = None
+        if threshold_parameters is not None:
+            _image, method, lower, upper, radius, _signature = threshold_parameters
+            if bounds_only_threshold:
+                threshold_temporal = build_threshold_mask(
+                    image_temporal, method, lower, upper, radius
+                )
+            else:
+                threshold_temporal = np.zeros(image_temporal.shape, dtype=bool)
+                for frame, frame_selection in self._threshold_frame_cache.items():
+                    threshold_temporal[:, frame] = self._extract_temporal_line(
+                        frame_selection, mode
+                    )
         self.temporal_view.set_sequence_slice(
             image_temporal,
             mask_temporal,
@@ -1261,6 +1378,20 @@ class MainWindow(QMainWindow):
             origin=mask.transform.origin_ras,
             direction=mask.transform.direction_ras,
             immediate=immediate,
+        )
+
+    def _refresh_navigation_3d(self) -> None:
+        mask = self.active_mask
+        if mask is None:
+            self.viewer_3d.set_mask(None)
+            return
+        self.viewer_3d.set_mask(
+            mask.data[:, :, :, self.cursor[3]],
+            labels=self.active_labels,
+            spacing=mask.spacing_xyz,
+            origin=mask.transform.origin_ras,
+            direction=mask.transform.direction_ras,
+            immediate=False,
         )
 
     def _stroke_started(
@@ -1360,16 +1491,21 @@ class MainWindow(QMainWindow):
                 self._mutable_plane(mask, plane, frame, self._stroke_context)
                 for frame in self._stroke_frames
             ]
-        threshold = None if self._stroke_ignore_threshold else self._threshold_selection()
-        if threshold is None:
+        threshold_enabled = (
+            not self._stroke_ignore_threshold and self._threshold_parameters() is not None
+        )
+        if not threshold_enabled:
             allowed_planes: list[np.ndarray | None] = [None] * len(planes)
         elif plane in TEMPORAL_AXES:
+            threshold = self._threshold_selection()
             allowed_planes = [
                 self._array_plane(threshold, plane, None, self._stroke_context)
             ]
         else:
             allowed_planes = [
-                self._array_plane(threshold, plane, frame, self._stroke_context)
+                self._array_spatial_frame(
+                    self._threshold_frame(frame), plane, self._stroke_context
+                )
                 for frame in self._stroke_frames
             ]
         for plane_data, allowed in zip(planes, allowed_planes):
@@ -1417,14 +1553,19 @@ class MainWindow(QMainWindow):
                 self._mutable_plane(pending.mask, plane, frame, pending.context)
                 for frame in pending.frames
             ]
-        threshold = None if pending.ignore_threshold else self._threshold_selection()
-        if threshold is None:
+        threshold_enabled = (
+            not pending.ignore_threshold and self._threshold_parameters() is not None
+        )
+        if not threshold_enabled:
             allowed_planes: list[np.ndarray | None] = [None] * len(planes)
         elif plane in TEMPORAL_AXES:
+            threshold = self._threshold_selection()
             allowed_planes = [self._array_plane(threshold, plane, None, pending.context)]
         else:
             allowed_planes = [
-                self._array_plane(threshold, plane, frame, pending.context)
+                self._array_spatial_frame(
+                    self._threshold_frame(frame), plane, pending.context
+                )
                 for frame in pending.frames
             ]
         for plane_data, allowed in zip(planes, allowed_planes):
@@ -1518,6 +1659,15 @@ class MainWindow(QMainWindow):
             return data[context[0], :, context[1], :]
         return data[context[0], context[1], :, :]
 
+    def _array_spatial_frame(
+        self, data: np.ndarray, plane: str, context: tuple[int, ...]
+    ) -> np.ndarray:
+        if plane == "X-Y":
+            return data[:, :, context[0]]
+        if plane == "X-Z":
+            return data[:, context[0], :]
+        return data[context[0], :, :]
+
     def _editing_spacing(
         self, plane: str, image: Sequence4D
     ) -> tuple[float, float]:
@@ -1583,8 +1733,8 @@ class MainWindow(QMainWindow):
             return
         voxel = self._voxel_for_plane(plane, h, v)
         x, y, z, frame = voxel
-        threshold = self._threshold_selection()
-        if threshold is not None and not bool(threshold[voxel]):
+        threshold = self._threshold_frame(frame)
+        if threshold is not None and not bool(threshold[x, y, z]):
             self.statusBar().showMessage(self._tr("grow_outside_mask"), 3000)
             return
         before = mask.data[..., [frame]].copy()
@@ -1599,7 +1749,7 @@ class MainWindow(QMainWindow):
             candidate = np.isfinite(intensities) & (np.abs(intensities - seed_value) <= tolerance)
             candidate &= (labels == 0) | (labels == self.active_label_value)
             if threshold is not None:
-                candidate &= threshold[..., frame]
+                candidate &= threshold
             region = connected_seed_region(candidate, (x, y, z))
             labels[region] = self.active_label_value
         else:
@@ -1611,7 +1761,7 @@ class MainWindow(QMainWindow):
             candidate = np.isfinite(intensities) & (np.abs(intensities - seed_value) <= tolerance)
             candidate &= (labels == 0) | (labels == self.active_label_value)
             if threshold is not None:
-                candidate &= self._array_plane(threshold, plane, frame, context)
+                candidate &= self._array_spatial_frame(threshold, plane, context)
             region = connected_seed_region(candidate, (h, v))
             labels[region] = self.active_label_value
         command = build_edit_command(mask, (frame,), before, frame)
@@ -1775,6 +1925,7 @@ class MainWindow(QMainWindow):
     def _navigate_in_plane(self, plane: str, h: int, v: int) -> None:
         if not self._valid_plane_point(plane, h, v):
             return
+        self.image_previews.set_plane(plane, emit=False)
         h_axis, v_axis, _ = PLANE_AXES[plane]
         self.cursor[h_axis], self.cursor[v_axis] = h, v
         self.refresh_views()
@@ -1793,11 +1944,12 @@ class MainWindow(QMainWindow):
         image = self.active_image
         if image is None:
             return
+        self.image_previews.set_plane(mode, emit=False)
         axis = TEMPORAL_AXES[mode]
         self.cursor[axis] = int(np.clip(axis_index, 0, image.data.shape[axis] - 1))
         self.cursor[3] = int(np.clip(time_index, 0, image.frame_count - 1))
         self.refresh_views()
-        self._refresh_3d()
+        self._refresh_navigation_3d()
 
     def _temporal_mode_changed(self, _index: int) -> None:
         if self._pending_contour is not None and self._pending_contour.plane in TEMPORAL_AXES:
@@ -1822,7 +1974,7 @@ class MainWindow(QMainWindow):
         self.cursor[axis] = value
         self.refresh_views()
         if axis == 3 and value != old_time:
-            self._refresh_3d(immediate=False)
+            self._refresh_navigation_3d()
 
     def _sync_slider(self) -> None:
         image = self.active_image

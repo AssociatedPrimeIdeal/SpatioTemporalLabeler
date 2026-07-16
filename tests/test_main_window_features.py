@@ -274,10 +274,13 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     assert preview is not None
     assert np.any(preview[..., 3] > 0)
 
+    full_refreshes = []
+    window.refresh_views = lambda *args, **kwargs: full_refreshes.append(None)
     old_levels = window._levels
     window.window_level_panel.level_control.slider.setValue(750)
 
     assert window._levels != old_levels
+    assert full_refreshes == []
     finish_window(window, mask)
 
 
@@ -292,8 +295,121 @@ def test_selecting_threshold_method_calculates_without_a_button():
     panel.method.setCurrentIndex(panel.method.findData("otsu"))
 
     assert not hasattr(panel, "auto_button")
-    assert 0.0 < panel.lower.value() < 10.0
-    assert panel.upper.value() == 10.0
+    assert 0.0 < panel.lower.value() < 100.0
+    assert panel.upper.value() == 100.0
+    lower, upper = panel.intensity_bounds
+    assert 0.0 < lower < 10.0
+    assert upper == 10.0
+    finish_window(window, mask)
+
+
+def test_threshold_percentages_preserve_tiny_intensity_ranges():
+    image_data = np.linspace(1.23456789, 1.23456799, 16, dtype=np.float64).reshape(
+        (4, 4, 1, 1)
+    )
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    panel = window.threshold_panel
+
+    panel.lower_slider.setValue(375)
+    lower, upper = panel.intensity_bounds
+
+    expected = image_data.min() + 0.375 * (image_data.max() - image_data.min())
+    assert panel.lower.value() == 37.5
+    assert panel.upper.value() == 100.0
+    assert np.isclose(lower, expected, rtol=0.0, atol=1e-14)
+    assert upper == image_data.max()
+    finish_window(window, mask)
+
+
+def test_local_threshold_preview_only_computes_the_current_frame():
+    image_data = np.linspace(0.0, 10.0, 7 * 7 * 3 * 4, dtype=np.float32).reshape(
+        (7, 7, 3, 4)
+    )
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    panel = window.threshold_panel
+    panel.enabled.setChecked(True)
+    panel.method.blockSignals(True)
+    panel.method.setCurrentIndex(panel.method.findData("local_gaussian"))
+    panel.method.blockSignals(False)
+    window.cursor[3] = 2
+    window._invalidate_threshold()
+    window._threshold_selection = lambda: (_ for _ in ()).throw(
+        AssertionError("live preview requested the full 4D threshold")
+    )
+
+    window.refresh_views()
+
+    assert set(window._threshold_frame_cache) == {2}
+    assert window.slice_views["X-Y"].threshold_item.image is not None
+    finish_window(window, mask)
+
+
+def test_spatial_thresholded_brush_does_not_request_all_frames():
+    image_data = np.ones((7, 7, 2, 3), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.threshold_panel.enabled.setChecked(True)
+    window.threshold_panel.set_percent_bounds(0.0, 100.0)
+    window.cursor = [3, 3, 0, 0]
+    window._invalidate_threshold()
+    window._threshold_selection = lambda: (_ for _ in ()).throw(
+        AssertionError("spatial brush requested every threshold frame")
+    )
+
+    window._stroke_started("X-Y", 3, 3)
+    window._stroke_finished("X-Y", 3, 3)
+
+    assert mask.data[3, 3, 0, 0] == 1
+    assert set(window._threshold_frame_cache) == {0}
+    finish_window(window, mask)
+
+
+def test_middle_drag_window_level_direction_and_preview_plane_follow_shift():
+    image_data = np.linspace(0.0, 100.0, 5 * 6 * 7 * 8, dtype=np.float32).reshape(
+        (5, 6, 7, 8)
+    )
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window._levels = (25.0, 75.0)
+    window._image_value_range = (0.0, 100.0)
+    window.window_level_panel.set_image_range(0.0, 100.0)
+
+    window._adjust_window_level(20.0, -10.0)
+
+    assert window._levels == (25.0, 85.0)
+    assert window.window_level_panel.level.value() == 55.0
+    assert window.window_level_panel.width.value() == 60.0
+
+    window._navigate_in_plane("X-Z", 2, 3)
+    assert window.image_previews.plane == "X-Z"
+    window._temporal_cursor_requested("Y-T", 4, 6)
+    assert window.image_previews.plane == "Y-T"
+    finish_window(window, mask)
+
+
+def test_time_navigation_queues_all_visible_labels():
+    image_data = np.zeros((5, 5, 2, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[1:3, 1:3, :, :] = 1
+    mask_data[3:5, 3:5, :, :] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    calls = []
+    window.viewer_3d.set_mask = lambda frame, **kwargs: calls.append(
+        (np.asarray(frame), kwargs)
+    )
+    window.cursor[3] = 1
+
+    window._refresh_navigation_3d()
+
+    assert len(calls) == 1
+    assert set(calls[0][1]["labels"]) == {1, 2}
+    assert calls[0][1]["immediate"] is False
     finish_window(window, mask)
 
 

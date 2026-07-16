@@ -2,19 +2,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
     QMessageBox,
+    QSlider,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from spatiotemporal_labeler.i18n import LANGUAGES
+
+from .render_settings import RenderSettings
 
 
 DEFAULT_SHORTCUTS = {
@@ -58,16 +65,66 @@ SHORTCUT_LABELS = {
 }
 
 
-class SettingsDialog(QDialog):
+class LabeledSlider(QWidget):
+    valueChanged = Signal(int)
+
     def __init__(
-        self, language: str, shortcuts: dict[str, str], parent: Any = None
+        self,
+        minimum: int,
+        maximum: int,
+        value: int,
+        suffix: str = "",
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self.suffix = suffix
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(minimum, maximum)
+        self.slider.setValue(value)
+        self.slider.setTracking(True)
+        layout.addWidget(self.slider, 1)
+        self.value_label = QLabel()
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label.setMinimumWidth(48)
+        layout.addWidget(self.value_label)
+        self.slider.valueChanged.connect(self._value_changed)
+        self._value_changed(value)
+
+    def value(self) -> int:
+        return self.slider.value()
+
+    def set_value(self, value: int) -> None:
+        self.slider.setValue(value)
+
+    def _value_changed(self, value: int) -> None:
+        self.value_label.setText(f"{value}{self.suffix}")
+        self.valueChanged.emit(value)
+
+
+class SettingsDialog(QDialog):
+    renderSettingsChanged = Signal(object)
+
+    def __init__(
+        self,
+        language: str,
+        shortcuts: dict[str, str],
+        parent: Any = None,
+        render_settings: RenderSettings | None = None,
     ) -> None:
         super().__init__(parent)
         chinese = language == "zh_CN"
+        render_settings = render_settings or RenderSettings()
         self.setWindowTitle("设置" if chinese else "Settings")
-        self.resize(520, 560)
+        self.resize(540, 600)
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+
+        general_page = QWidget()
+        form = QFormLayout(general_page)
         self.language_combo = QComboBox()
         for code, name in LANGUAGES.items():
             self.language_combo.addItem(name, code)
@@ -83,8 +140,59 @@ class SettingsDialog(QDialog):
             editor.setClearButtonEnabled(True)
             form.addRow(labels[key], editor)
             self.shortcut_edits[key] = editor
-        layout.addLayout(form)
-        layout.addStretch()
+        self.tabs.addTab(general_page, "常规" if chinese else "General")
+
+        render_page = QWidget()
+        render_form = QFormLayout(render_page)
+        self.render_style = QComboBox()
+        style_names = (
+            (("clinical", "临床"), ("matte", "哑光"), ("glossy", "高光"))
+            if chinese
+            else (("clinical", "Clinical"), ("matte", "Matte"), ("glossy", "Glossy"))
+        )
+        for key, name in style_names:
+            self.render_style.addItem(name, key)
+        self.render_style.setCurrentIndex(
+            max(0, self.render_style.findData(render_settings.style))
+        )
+        render_form.addRow("渲染风格" if chinese else "Rendering style", self.render_style)
+
+        self.render_lighting = LabeledSlider(40, 160, render_settings.lighting, "%")
+        render_form.addRow("光照" if chinese else "Lighting", self.render_lighting)
+        self.render_smoothing = LabeledSlider(0, 16, render_settings.smoothing)
+        render_form.addRow(
+            "表面平滑" if chinese else "Surface smoothing", self.render_smoothing
+        )
+
+        self.render_detail = QComboBox()
+        detail_names = (
+            (("performance", "性能"), ("balanced", "平衡"), ("fine", "精细"))
+            if chinese
+            else (
+                ("performance", "Performance"),
+                ("balanced", "Balanced"),
+                ("fine", "Fine"),
+            )
+        )
+        for key, name in detail_names:
+            self.render_detail.addItem(name, key)
+        self.render_detail.setCurrentIndex(
+            max(0, self.render_detail.findData(render_settings.detail))
+        )
+        render_form.addRow("细节等级" if chinese else "Detail level", self.render_detail)
+        self.tabs.addTab(render_page, "3D 渲染" if chinese else "3D Rendering")
+
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(120)
+        self._render_timer.timeout.connect(
+            lambda: self.renderSettingsChanged.emit(self.render_values())
+        )
+        self.render_style.currentIndexChanged.connect(self._render_control_changed)
+        self.render_lighting.valueChanged.connect(self._render_control_changed)
+        self.render_smoothing.valueChanged.connect(self._render_control_changed)
+        self.render_detail.currentIndexChanged.connect(self._render_control_changed)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -95,11 +203,30 @@ class SettingsDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(
             self._restore_defaults
         )
+        if chinese:
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+            buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+            buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).setText(
+                "恢复默认"
+            )
         layout.addWidget(buttons)
 
     def _restore_defaults(self) -> None:
         for key, value in DEFAULT_SHORTCUTS.items():
             self.shortcut_edits[key].setKeySequence(QKeySequence(value))
+        defaults = RenderSettings()
+        self.render_style.setCurrentIndex(self.render_style.findData(defaults.style))
+        self.render_lighting.set_value(defaults.lighting)
+        self.render_smoothing.set_value(defaults.smoothing)
+        self.render_detail.setCurrentIndex(self.render_detail.findData(defaults.detail))
+        self._render_timer.start()
+
+    def _render_control_changed(self, _value: object = None) -> None:
+        self._render_timer.start()
+
+    def done(self, result: int) -> None:
+        self._render_timer.stop()
+        super().done(result)
 
     def _validate_and_accept(self) -> None:
         sequences = [editor.keySequence() for editor in self.shortcut_edits.values()]
@@ -135,3 +262,13 @@ class SettingsDialog(QDialog):
             key: editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
             for key, editor in self.shortcut_edits.items()
         }
+
+    def render_values(self) -> RenderSettings:
+        return RenderSettings.normalized(
+            {
+                "style": self.render_style.currentData(),
+                "lighting": self.render_lighting.value(),
+                "smoothing": self.render_smoothing.value(),
+                "detail": self.render_detail.currentData(),
+            }
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -38,6 +39,8 @@ class ThresholdPanel(QWidget):
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
+        self._image_minimum = 0.0
+        self._image_maximum = 1.0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         self.enabled = QCheckBox()
@@ -55,15 +58,19 @@ class ThresholdPanel(QWidget):
         self.method_label = QLabel()
         form.addRow(self.method_label, self.method)
 
-        self.lower_control = FloatSliderSpin()
+        self.lower_control = FloatSliderSpin(decimals=2)
+        self.lower_control.set_range(0.0, 100.0)
+        self.lower_control.spin.setSuffix(" %")
         self.lower_control.valueChanged.connect(self._lower_changed)
         self.lower = self.lower_control.spin
         self.lower_slider = self.lower_control.slider
         self.lower_label = QLabel()
         form.addRow(self.lower_label, self.lower_control)
 
-        self.upper_control = FloatSliderSpin()
-        self.upper_control.set_value(1.0)
+        self.upper_control = FloatSliderSpin(decimals=2)
+        self.upper_control.set_range(0.0, 100.0)
+        self.upper_control.set_value(100.0)
+        self.upper_control.spin.setSuffix(" %")
         self.upper_control.valueChanged.connect(self._upper_changed)
         self.upper = self.upper_control.spin
         self.upper_slider = self.upper_control.slider
@@ -81,15 +88,33 @@ class ThresholdPanel(QWidget):
         self.set_language("en")
 
     def set_image_range(self, low: float, high: float) -> None:
-        self.lower_control.set_range(low, high)
-        self.upper_control.set_range(low, high)
-        self.set_bounds(low, high)
+        self._image_minimum = float(min(low, high))
+        self._image_maximum = float(max(low, high))
+        self.set_percent_bounds(0.0, 100.0)
 
     def set_bounds(self, lower: float, upper: float) -> None:
         lower, upper = sorted((float(lower), float(upper)))
-        self.lower_control.set_value(lower)
-        self.upper_control.set_value(upper)
+        span = self._image_maximum - self._image_minimum
+        if span <= 0.0:
+            self.set_percent_bounds(0.0, 100.0)
+            return
+        self.set_percent_bounds(
+            100.0 * (lower - self._image_minimum) / span,
+            100.0 * (upper - self._image_minimum) / span,
+        )
+
+    def set_percent_bounds(self, lower: float, upper: float) -> None:
+        lower, upper = sorted((float(lower), float(upper)))
+        self.lower_control.set_value(float(np.clip(lower, 0.0, 100.0)))
+        self.upper_control.set_value(float(np.clip(upper, 0.0, 100.0)))
         self.changed.emit()
+
+    @property
+    def intensity_bounds(self) -> tuple[float, float]:
+        span = self._image_maximum - self._image_minimum
+        lower = self._image_minimum + self.lower_control.value() * span / 100.0
+        upper = self._image_minimum + self.upper_control.value() * span / 100.0
+        return lower, upper
 
     def _lower_changed(self, value: float) -> None:
         if value > self.upper_control.value():

@@ -6,6 +6,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -17,6 +18,9 @@ from PySide6.QtWidgets import (
 )
 
 from spatiotemporal_labeler.io import Sequence4D
+
+
+PREVIEW_PLANES = ("X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T")
 
 
 class ThumbnailPlot(pg.PlotWidget):
@@ -52,6 +56,7 @@ class ThumbnailPlot(pg.PlotWidget):
 class ImagePreviewStrip(QFrame):
     imageActivated = Signal(int)
     collapsedChanged = Signal(bool)
+    planeChanged = Signal(str)
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
@@ -67,6 +72,10 @@ class ImagePreviewStrip(QFrame):
         self.title = QLabel("Other images")
         header.addWidget(self.title)
         header.addStretch()
+        self.plane_selector = QComboBox()
+        self.plane_selector.addItems(PREVIEW_PLANES)
+        self.plane_selector.currentTextChanged.connect(self.planeChanged.emit)
+        header.addWidget(self.plane_selector)
         self.collapse_button = QToolButton()
         self.collapse_button.clicked.connect(self.toggle_collapsed)
         header.addWidget(self.collapse_button)
@@ -86,9 +95,21 @@ class ImagePreviewStrip(QFrame):
     def collapsed(self) -> bool:
         return self._collapsed
 
+    @property
+    def plane(self) -> str:
+        return self.plane_selector.currentText()
+
+    def set_plane(self, plane: str, emit: bool = True) -> None:
+        if plane not in PREVIEW_PLANES or plane == self.plane:
+            return
+        signals_were_blocked = self.plane_selector.blockSignals(not emit)
+        self.plane_selector.setCurrentText(plane)
+        self.plane_selector.blockSignals(signals_were_blocked)
+
     def set_language(self, language: str) -> None:
         self._language = language
         self.title.setText("其他图像" if language == "zh_CN" else "Other images")
+        self.plane_selector.setToolTip("预览平面" if language == "zh_CN" else "Preview plane")
         self._update_collapse_button()
 
     def toggle_collapsed(self) -> None:
@@ -99,6 +120,7 @@ class ImagePreviewStrip(QFrame):
         changed = collapsed != self._collapsed
         self._collapsed = collapsed
         self.title.setVisible(not collapsed)
+        self.plane_selector.setVisible(not collapsed)
         self.content.setVisible(not collapsed)
         if collapsed:
             self.setMinimumWidth(32)
@@ -161,9 +183,7 @@ class ImagePreviewStrip(QFrame):
             return
         for index, plot in self._plots.items():
             sequence = images[index]
-            z = int(np.clip(cursor[2], 0, sequence.data.shape[2] - 1))
-            t = int(np.clip(cursor[3], 0, sequence.frame_count - 1))
-            image = sequence.data[:, :, z, t]
+            image = self._extract_preview(sequence, cursor, self.plane)
             finite = image[np.isfinite(image)]
             if finite.size:
                 low, high = np.percentile(finite, (1.0, 99.0))
@@ -171,3 +191,25 @@ class ImagePreviewStrip(QFrame):
             else:
                 levels = (0.0, 1.0)
             plot.set_image(image, levels)
+
+    @staticmethod
+    def _extract_preview(
+        sequence: Sequence4D,
+        cursor: tuple[int, int, int, int],
+        plane: str,
+    ) -> np.ndarray:
+        x, y, z, t = (
+            int(np.clip(cursor[axis], 0, sequence.data.shape[axis] - 1))
+            for axis in range(4)
+        )
+        if plane == "X-Y":
+            return sequence.data[:, :, z, t]
+        if plane == "X-Z":
+            return sequence.data[:, y, :, t]
+        if plane == "Y-Z":
+            return sequence.data[x, :, :, t]
+        if plane == "X-T":
+            return sequence.data[:, y, z, :]
+        if plane == "Y-T":
+            return sequence.data[x, :, z, :]
+        return sequence.data[x, y, :, :]
