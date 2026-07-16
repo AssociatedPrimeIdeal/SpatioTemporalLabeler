@@ -5,15 +5,16 @@ from time import monotonic
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QShowEvent
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QVBoxLayout, QWidget
+from skimage.draw import polygon as rasterize_polygon
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401 - registers the OpenGL render backend
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.util.numpy_support import numpy_to_vtk
-from vtkmodules.vtkCommonCore import VTK_INT
-from vtkmodules.vtkCommonDataModel import vtkImageData
+from vtkmodules.vtkCommonCore import VTK_INT, vtkPoints
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import (
     vtkDecimatePro,
     vtkFlyingEdges3D,
@@ -21,13 +22,16 @@ from vtkmodules.vtkFiltersCore import (
     vtkWindowedSincPolyDataFilter,
 )
 from vtkmodules.vtkFiltersSources import vtkSphereSource
+from vtkmodules.vtkFiltersGeneral import vtkContourTriangulator
 from vtkmodules.vtkImagingCore import vtkImageConstantPad, vtkImageThreshold
 from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
+    vtkActor2D,
     vtkLightKit,
     vtkPolyDataMapper,
+    vtkPolyDataMapper2D,
     vtkRenderer,
 )
 
@@ -85,12 +89,20 @@ class SegmentPipeline:
 class Mask3DViewer(QWidget):
     """Smoothed multilabel rendering with a persistent spatial-cursor marker."""
 
+    lassoStarted = Signal()
+    lassoFinished = Signal(object)
+
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         layout.addWidget(self.vtk_widget)
+        self.vtk_widget.installEventFilter(self)
+        self._lasso_enabled = False
+        self._lasso_active = False
+        self._alt_rotate_active = False
+        self._lasso_points: list[QPointF] = []
 
         render_window = self.vtk_widget.GetRenderWindow()
         render_window.SetMultiSamples(8)
@@ -146,6 +158,7 @@ class Mask3DViewer(QWidget):
         self.cursor_actor.GetProperty().SetColor(1.0, 0.78, 0.18)
         self.cursor_actor.GetProperty().LightingOff()
         self.cursor_renderer.AddActor(self.cursor_actor)
+        self._build_lasso_actors()
 
         axes = vtkAxesActor()
         axes.SetXAxisLabelText("R")
@@ -175,6 +188,7 @@ class Mask3DViewer(QWidget):
             tuple[float, ...],
             np.ndarray,
             tuple[LabelDefinition, ...],
+            float,
         ] | None = None
         self._has_camera = False
         self._initialized = False
@@ -191,6 +205,305 @@ class Mask3DViewer(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(self._throttle_ms)
         self._timer.timeout.connect(self._apply_pending)
+
+    def _build_lasso_actors(self) -> None:
+        color = (1.0, 0.78, 0.34)
+        self._lasso_fill_data = vtkPolyData()
+        self._lasso_fill_triangulator = vtkContourTriangulator()
+        self._lasso_fill_triangulator.SetInputData(self._lasso_fill_data)
+        fill_mapper = vtkPolyDataMapper2D()
+        fill_mapper.SetInputConnection(self._lasso_fill_triangulator.GetOutputPort())
+        self._lasso_fill_actor = vtkActor2D()
+        self._lasso_fill_actor.SetMapper(fill_mapper)
+        self._lasso_fill_actor.GetProperty().SetColor(*color)
+        self._lasso_fill_actor.GetProperty().SetOpacity(0.20)
+
+        self._lasso_path_data = vtkPolyData()
+        path_mapper = vtkPolyDataMapper2D()
+        path_mapper.SetInputData(self._lasso_path_data)
+        self._lasso_path_actor = vtkActor2D()
+        self._lasso_path_actor.SetMapper(path_mapper)
+        self._lasso_path_actor.GetProperty().SetColor(*color)
+        self._lasso_path_actor.GetProperty().SetLineWidth(2.0)
+
+        self._lasso_closure_data = vtkPolyData()
+        closure_mapper = vtkPolyDataMapper2D()
+        closure_mapper.SetInputData(self._lasso_closure_data)
+        self._lasso_closure_actor = vtkActor2D()
+        self._lasso_closure_actor.SetMapper(closure_mapper)
+        self._lasso_closure_actor.GetProperty().SetColor(*color)
+        self._lasso_closure_actor.GetProperty().SetLineWidth(1.6)
+
+        for actor in (
+            self._lasso_fill_actor,
+            self._lasso_path_actor,
+            self._lasso_closure_actor,
+        ):
+            actor.SetVisibility(False)
+            self.cursor_renderer.AddViewProp(actor)
+
+    @staticmethod
+    def _set_polyline_data(
+        data: vtkPolyData,
+        points: list[tuple[float, float]],
+        *,
+        closed: bool = False,
+    ) -> None:
+        vtk_points = vtkPoints()
+        for x, y in points:
+            vtk_points.InsertNextPoint(float(x), float(y), 0.0)
+        lines = vtkCellArray()
+        if len(points) >= 2:
+            indices = list(range(len(points)))
+            if closed:
+                indices.append(0)
+            lines.InsertNextCell(len(indices))
+            for index in indices:
+                lines.InsertCellPoint(index)
+        data.SetPoints(vtk_points)
+        data.SetLines(lines)
+        data.Modified()
+
+    @staticmethod
+    def _set_dashed_line_data(
+        data: vtkPolyData,
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> None:
+        start_array = np.asarray(start, dtype=float)
+        delta = np.asarray(end, dtype=float) - start_array
+        length = float(np.linalg.norm(delta))
+        vtk_points = vtkPoints()
+        lines = vtkCellArray()
+        if length > 0.0:
+            direction = delta / length
+            offset = 0.0
+            while offset < length:
+                segment_end = min(offset + 7.0, length)
+                first = start_array + direction * offset
+                last = start_array + direction * segment_end
+                first_index = vtk_points.InsertNextPoint(*first, 0.0)
+                last_index = vtk_points.InsertNextPoint(*last, 0.0)
+                lines.InsertNextCell(2)
+                lines.InsertCellPoint(first_index)
+                lines.InsertCellPoint(last_index)
+                offset += 12.0
+        data.SetPoints(vtk_points)
+        data.SetLines(lines)
+        data.Modified()
+
+    def set_lasso_points(self, points: list[QPointF]) -> None:
+        self._lasso_points = list(points)
+        render_width, render_height = self.vtk_widget.GetRenderWindow().GetSize()
+        widget_width, widget_height = self.vtk_widget.width(), self.vtk_widget.height()
+        if min(render_width, render_height, widget_width, widget_height) <= 0:
+            return
+        scale_x = render_width / float(widget_width)
+        scale_y = render_height / float(widget_height)
+        display_points = [
+            (point.x() * scale_x, render_height - 1.0 - point.y() * scale_y)
+            for point in points
+        ]
+        self._set_polyline_data(self._lasso_path_data, display_points)
+        self._lasso_path_actor.SetVisibility(bool(display_points))
+        self._set_polyline_data(
+            self._lasso_fill_data, display_points, closed=True
+        )
+        self._lasso_fill_actor.SetVisibility(len(display_points) >= 3)
+        if len(display_points) >= 2:
+            self._set_dashed_line_data(
+                self._lasso_closure_data,
+                display_points[-1],
+                display_points[0],
+            )
+            self._lasso_closure_actor.SetVisibility(True)
+        else:
+            self._lasso_closure_actor.SetVisibility(False)
+        if self._initialized:
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def set_lasso_enabled(self, enabled: bool) -> None:
+        self._lasso_enabled = bool(enabled)
+        self.vtk_widget.setCursor(
+            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+        )
+        if not enabled:
+            self.clear_lasso()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if self._lasso_points:
+            QTimer.singleShot(0, lambda: self.set_lasso_points(self._lasso_points))
+
+    def clear_lasso(self) -> None:
+        was_visible = any(
+            actor.GetVisibility()
+            for actor in (
+                self._lasso_fill_actor,
+                self._lasso_path_actor,
+                self._lasso_closure_actor,
+            )
+        )
+        self._lasso_active = False
+        self._lasso_points = []
+        for actor in (
+            self._lasso_fill_actor,
+            self._lasso_path_actor,
+            self._lasso_closure_actor,
+        ):
+            actor.SetVisibility(False)
+        if self._initialized and was_visible:
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if watched is not self.vtk_widget:
+            return super().eventFilter(watched, event)
+        if not isinstance(event, QMouseEvent):
+            return super().eventFilter(watched, event)
+        left_pressed = bool(event.buttons() & Qt.MouseButton.LeftButton)
+        left_event = event.button() == Qt.MouseButton.LeftButton
+        if self._alt_rotate_active:
+            if event.type() == QEvent.Type.MouseButtonRelease and left_event:
+                self._alt_rotate_active = False
+            return super().eventFilter(watched, event)
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and left_event
+            and event.modifiers() & Qt.KeyboardModifier.AltModifier
+        ):
+            self._alt_rotate_active = True
+            return super().eventFilter(watched, event)
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and left_event
+            and self._lasso_enabled
+        ):
+            self._lasso_active = True
+            self._lasso_points = [event.position()]
+            self.set_lasso_points(self._lasso_points)
+            self.lassoStarted.emit()
+            return True
+        if event.type() == QEvent.Type.MouseMove and self._lasso_active:
+            point = event.position()
+            if not self._lasso_points or (
+                point - self._lasso_points[-1]
+            ).manhattanLength() >= 1.0:
+                self._lasso_points.append(point)
+                self.set_lasso_points(self._lasso_points)
+            return True
+        if (
+            event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._lasso_active
+        ):
+            point = event.position()
+            if not self._lasso_points or point != self._lasso_points[-1]:
+                self._lasso_points.append(point)
+            self._lasso_active = False
+            self.set_lasso_points(self._lasso_points)
+            self.lassoFinished.emit(
+                [(float(item.x()), float(item.y())) for item in self._lasso_points]
+            )
+            self.clear_lasso()
+            return True
+        if left_event or left_pressed:
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
+    def lasso_voxel_mask(
+        self,
+        shape: tuple[int, int, int],
+        points: list[tuple[float, float]],
+        *,
+        spacing: tuple[float, float, float],
+        origin: tuple[float, float, float],
+        direction: np.ndarray,
+    ) -> np.ndarray:
+        """Project voxel centers and select those inside a screen-space lasso."""
+        result = np.zeros(shape, dtype=bool)
+        if len(points) < 3 or any(size <= 0 for size in shape):
+            return result
+        render_width, render_height = self.vtk_widget.GetRenderWindow().GetSize()
+        widget_width, widget_height = self.vtk_widget.width(), self.vtk_widget.height()
+        if min(render_width, render_height, widget_width, widget_height) <= 0:
+            return result
+
+        scale_x = render_width / float(widget_width)
+        scale_y = render_height / float(widget_height)
+        polygon_x = np.asarray([point[0] * scale_x for point in points], dtype=float)
+        polygon_y = np.asarray([point[1] * scale_y for point in points], dtype=float)
+        screen_selection = np.zeros((render_height, render_width), dtype=bool)
+        rows, columns = rasterize_polygon(
+            polygon_y, polygon_x, shape=screen_selection.shape
+        )
+        screen_selection[rows, columns] = True
+
+        self.renderer.ComputeAspect()
+        aspect_pair = self.renderer.GetAspect()
+        aspect = float(aspect_pair[0]) / max(float(aspect_pair[1]), 1e-12)
+        vtk_matrix = self.renderer.GetActiveCamera().GetCompositeProjectionTransformMatrix(
+            aspect, 0.0, 1.0
+        )
+        projection = np.asarray(
+            [
+                [vtk_matrix.GetElement(row, column) for column in range(4)]
+                for row in range(4)
+            ],
+            dtype=float,
+        )
+        spacing_array = np.asarray(spacing, dtype=float)
+        origin_array = np.asarray(origin, dtype=float)
+        direction_array = np.asarray(direction, dtype=float)
+        viewport = self.renderer.GetViewport()
+        viewport_x0, viewport_y0, viewport_x1, viewport_y1 = map(float, viewport)
+        grid_x, grid_y = np.meshgrid(
+            np.arange(shape[0], dtype=float),
+            np.arange(shape[1], dtype=float),
+            indexing="ij",
+        )
+        for z_index in range(shape[2]):
+            voxels = np.vstack(
+                (
+                    grid_x.ravel(),
+                    grid_y.ravel(),
+                    np.full(grid_x.size, float(z_index)),
+                )
+            )
+            world = origin_array[:, None] + direction_array @ (
+                voxels * spacing_array[:, None]
+            )
+            homogeneous = np.vstack((world, np.ones(world.shape[1], dtype=float)))
+            clip = projection @ homogeneous
+            w_component = clip[3]
+            valid = (
+                np.isfinite(w_component)
+                & (w_component > 1e-12)
+                & np.all(np.isfinite(clip[:2]), axis=0)
+            )
+            normalized = np.zeros((2, clip.shape[1]), dtype=float)
+            normalized[:, valid] = clip[:2, valid] / w_component[valid]
+            display_x = (
+                viewport_x0
+                + (normalized[0] + 1.0) * 0.5 * (viewport_x1 - viewport_x0)
+            ) * render_width
+            display_y_bottom = (
+                viewport_y0
+                + (normalized[1] + 1.0) * 0.5 * (viewport_y1 - viewport_y0)
+            ) * render_height
+            display_y = render_height - 1.0 - display_y_bottom
+            columns = np.rint(display_x).astype(np.int64)
+            rows = np.rint(display_y).astype(np.int64)
+            valid &= (
+                (columns >= 0)
+                & (columns < render_width)
+                & (rows >= 0)
+                & (rows < render_height)
+            )
+            selected = np.zeros(valid.shape, dtype=bool)
+            selected[valid] = screen_selection[rows[valid], columns[valid]]
+            result[:, :, z_index] = selected.reshape(shape[:2])
+        return result
 
     def set_render_settings(
         self, settings: RenderSettings, render: bool = True
@@ -341,6 +654,7 @@ class Mask3DViewer(QWidget):
         direction: np.ndarray | None = None,
         immediate: bool = False,
         labels: dict[int, LabelDefinition] | None = None,
+        global_opacity: float = 1.0,
     ) -> None:
         if frame is None:
             self._timer.stop()
@@ -372,6 +686,7 @@ class Mask3DViewer(QWidget):
             tuple(origin or (0.0, 0.0, 0.0)),
             np.asarray(direction if direction is not None else np.eye(3), dtype=float),
             definitions,
+            float(np.clip(global_opacity, 0.0, 1.0)),
         )
         if immediate:
             self._timer.stop()
@@ -392,7 +707,7 @@ class Mask3DViewer(QWidget):
         if self._pending is None:
             return
         started = monotonic()
-        frame, spacing, origin, direction, definitions = self._pending
+        frame, spacing, origin, direction, definitions, global_opacity = self._pending
         self._pending = None
         dimensions_changed = tuple(self.image.GetDimensions()) != tuple(frame.shape)
         self.image.SetDimensions(*frame.shape)
@@ -412,6 +727,9 @@ class Mask3DViewer(QWidget):
             pipeline = self._segment_pipeline(definition)
             red, green, blue = (channel / 255.0 for channel in definition.color)
             pipeline.actor.GetProperty().SetColor(red, green, blue)
+            pipeline.actor.GetProperty().SetOpacity(
+                float(np.clip(definition.opacity * global_opacity, 0.0, 1.0))
+            )
             pipeline.actor.SetVisibility(True)
             pipeline.threshold.Modified()
             pipeline.pad.SetOutputWholeExtent(
@@ -440,6 +758,22 @@ class Mask3DViewer(QWidget):
         completed = monotonic()
         self._last_apply_duration_ms = (completed - started) * 1000.0
         self._last_apply_time = completed
+
+    def set_label_opacities(
+        self,
+        labels: dict[int, LabelDefinition],
+        global_opacity: float,
+    ) -> None:
+        global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
+        for value, pipeline in self.segment_pipelines.items():
+            definition = labels.get(value)
+            if definition is None:
+                continue
+            pipeline.actor.GetProperty().SetOpacity(
+                float(np.clip(definition.opacity * global_opacity, 0.0, 1.0))
+            )
+        if self._initialized:
+            self.vtk_widget.GetRenderWindow().Render()
 
     def _segment_pipeline(self, definition: LabelDefinition) -> SegmentPipeline:
         existing = self.segment_pipelines.get(definition.value)

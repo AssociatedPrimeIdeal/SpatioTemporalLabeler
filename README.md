@@ -20,10 +20,12 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 - Multiple image sequences, label sequences, and integer labels
 - Unified image/label import classification, drag-and-drop, and selectable-plane previews for other loaded images
 - Physical round or square brush and eraser footprints
+- Immediate 2D/3D scissors lasso for label erase or replacement, including all-time-frame edits
 - Closed-contour raster drawing with interior fill
 - Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width
 - Optional all-time-frame spatial editing as one undoable operation
-- Independent threshold mask with percentage lower/upper sliders, automatic methods, preview, and bypass
+- Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
+- Per-label opacity from the label-row context menu plus a global label opacity control
 - Live window level/width sliders in a separate display panel
 - 2D/3D seed region growing that stops at other labels
 - Per-label morphology with physical `mm` radii and `mm³` component volumes
@@ -52,13 +54,13 @@ Each package also contains per-user install and uninstall scripts. No administra
 Every release includes a pure Python wheel and source distribution. Install the current release directly from GitHub:
 
 ```bash
-python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.1.6/spatiotemporal_labeler-0.1.6-py3-none-any.whl"
+python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.2.0/spatiotemporal_labeler-0.2.0-py3-none-any.whl"
 ```
 
 Alternatively, download the wheel from the release and install it locally:
 
 ```bash
-python -m pip install spatiotemporal_labeler-0.1.6-py3-none-any.whl
+python -m pip install spatiotemporal_labeler-0.2.0-py3-none-any.whl
 ```
 
 Launch the installed application with `spatiotemporal-labeler`. Python 3.9 or newer is required. Runtime dependencies are installed automatically by pip.
@@ -84,7 +86,8 @@ spatiotemporal-labeler
 
 | Input | Action |
 | --- | --- |
-| Left drag | Use the selected brush, eraser, or contour tool |
+| Left drag | Use the selected brush, eraser, scissors lasso, or contour tool |
+| Alt + left drag in 3D | Rotate the 3D camera |
 | Right drag | Temporarily erase without changing the selected tool |
 | Hold Shift and move | Move the linked spatial cursor without editing |
 | Shift + left drag | Pan a 2D view |
@@ -94,14 +97,14 @@ spatiotemporal-labeler
 | Wheel in a spatial view | Change its orthogonal slice |
 | Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
-| `B`, `E`, `L`, `G` | Brush, eraser, contour, or seed grow |
+| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or seed grow |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |
 | `R` | Reset 2D zoom and pan |
 | Left / Right | Step through time frames |
 | Hold `CapsLock` | Temporarily apply spatial edits to all frames |
-| Hold `Q` | Bypass an enabled threshold mask while drawing or erasing |
+| Hold `Q` | Bypass a checked applied threshold mask while drawing or erasing |
 | `Ctrl+Z`, `Ctrl+Y` | Undo or redo |
-| `Esc` | Cancel a pending contour |
+| `Esc` | Cancel a pending contour or active lasso preview |
 
 Enable **All time frames** to repeat one spatial gesture at the same X/Y/Z coordinates in every frame. Temporal-view edits always affect the exact time pixels drawn.
 

@@ -2,6 +2,18 @@
 
 All notable changes to SpatioTemporal Labeler are documented in this file.
 
+## 0.2.0 - 2026-07-17
+
+### Added
+
+- Immediate scissors-lasso editing in 2D slices and the 3D view, with erase and label-replacement operations, implicit dashed closure, automatic overlay clearing, and all-time-frame support.
+- Per-label opacity controls in label-row context menus and a persistent global label opacity control.
+
+### Changed
+
+- Threshold candidates are now materialized with Apply as a single replaceable `Threshold mask` entry whose checkbox and deletion control the editing constraint.
+- 3D camera rotation now uses Alt+left drag so unmodified left drag is reserved for scissors-lasso editing.
+
 ## 0.1.6 - 2026-07-17
 
 ### Added

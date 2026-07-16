@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QGraphicsEllipseItem,
     QGraphicsObject,
+    QGraphicsPolygonItem,
     QGraphicsRectItem,
 )
 
@@ -159,13 +160,14 @@ class FootprintOverlay:
         color = {
             "brush": "#39d5c5",
             "eraser": "#ff6b64",
+            "lasso": "#ffc857",
             "contour": "#ffd166",
             "picker": "#bda7ff",
             "grow": "#69dc93",
         }[effective_tool]
         pen = pg.mkPen(color, width=1.7)
         brush = pg.mkBrush((*pg.mkColor(color).getRgb()[:3], 28))
-        if effective_tool in {"contour", "picker", "grow"}:
+        if effective_tool in {"lasso", "contour", "picker", "grow"}:
             width, height = self.display_spacing
             self.rectangle.setRect(
                 QRectF(center_h - width / 2.0, center_v - height / 2.0, width, height)
@@ -193,10 +195,56 @@ class FootprintOverlay:
         item.show()
 
 
+class LassoOverlay:
+    """Live solid path, translucent area, and dashed implicit closing edge."""
+
+    def __init__(self, view: pg.PlotWidget) -> None:
+        self.fill = QGraphicsPolygonItem()
+        self.path = pg.PlotDataItem(pen=pg.mkPen("#ffc857", width=1.7))
+        self.closure = pg.PlotDataItem(
+            pen=pg.mkPen("#ffc857", width=1.5, style=Qt.PenStyle.DashLine)
+        )
+        self.fill.setPen(pg.mkPen(None))
+        self.fill.setBrush(pg.mkBrush(255, 200, 87, 48))
+        for item, z_value in ((self.fill, 18), (self.path, 21), (self.closure, 22)):
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setZValue(z_value)
+            view.addItem(item)
+        self.clear()
+
+    def set_points(
+        self,
+        points: list[tuple[int, int]],
+        scale: tuple[float, float],
+    ) -> None:
+        if not points:
+            self.clear()
+            return
+        x = [point[0] * scale[0] for point in points]
+        y = [point[1] * scale[1] for point in points]
+        self.path.setData(x, y, connect="finite")
+        if len(points) >= 2:
+            self.closure.setData([x[-1], x[0]], [y[-1], y[0]], connect="finite")
+        else:
+            self.closure.setData([], [])
+        if len(points) >= 3:
+            self.fill.setPolygon(QPolygonF([QPointF(px, py) for px, py in zip(x, y)]))
+            self.fill.show()
+        else:
+            self.fill.hide()
+
+    def clear(self) -> None:
+        self.path.setData([], [])
+        self.closure.setData([], [])
+        self.fill.setPolygon(QPolygonF())
+        self.fill.hide()
+
+
 def label_overlay(
     mask: np.ndarray,
     definitions: dict[int, LabelDefinition] | None = None,
     alpha: int = 124,
+    global_opacity: float = 1.0,
 ) -> np.ndarray:
     labels = np.asarray(mask)
     rgba = np.zeros((*labels.shape, 4), dtype=np.uint8)
@@ -209,15 +257,23 @@ def label_overlay(
             continue
         selected = labels == definition.value
         rgba[..., :3][selected] = definition.color
-        rgba[..., 3][selected] = alpha
+        effective_alpha = int(
+            round(alpha * np.clip(definition.opacity, 0.0, 1.0) * np.clip(global_opacity, 0.0, 1.0))
+        )
+        rgba[..., 3][selected] = effective_alpha
     return rgba
 
 
-def threshold_overlay(selection: np.ndarray) -> np.ndarray:
+def threshold_overlay(
+    selection: np.ndarray,
+    *,
+    opacity: float = 1.0,
+    color: tuple[int, int, int] = (35, 210, 190),
+) -> np.ndarray:
     selected = np.asarray(selection, dtype=bool)
     rgba = np.zeros((*selected.shape, 4), dtype=np.uint8)
-    rgba[..., :3][selected] = (35, 210, 190)
-    rgba[..., 3][selected] = 72
+    rgba[..., :3][selected] = color
+    rgba[..., 3][selected] = int(round(72 * np.clip(opacity, 0.0, 1.0)))
     return rgba
 
 
@@ -344,6 +400,7 @@ class SliceView(pg.PlotWidget):
         self._geometry_signature: tuple[float, ...] | None = None
         self.image_item = EditableImageItem()
         self.threshold_item = pg.ImageItem()
+        self.applied_threshold_item = pg.ImageItem()
         self.mask_item = pg.ImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
@@ -368,17 +425,21 @@ class SliceView(pg.PlotWidget):
         self.crosshair_vertical.setZValue(30)
         self.crosshair_horizontal.setZValue(30)
         self.threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.applied_threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.contour_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.threshold_item.setZValue(5)
+        self.applied_threshold_item.setZValue(6)
         self.mask_item.setZValue(10)
         self.contour_item.setZValue(20)
         self.addItem(self.image_item)
         self.addItem(self.threshold_item)
+        self.addItem(self.applied_threshold_item)
         self.addItem(self.mask_item)
         self.addItem(self.contour_item)
         self.addItem(self.crosshair_vertical)
         self.addItem(self.crosshair_horizontal)
+        self.lasso_overlay = LassoOverlay(self)
         view_box = self.getViewBox()
         self._locator_handles = (
             (
@@ -496,6 +557,9 @@ class SliceView(pg.PlotWidget):
         labels: dict[int, LabelDefinition] | None = None,
         cursor: tuple[int, int] | None = None,
         threshold: np.ndarray | None = None,
+        applied_threshold: np.ndarray | None = None,
+        global_opacity: float = 1.0,
+        threshold_opacity: float = 1.0,
     ) -> None:
         self.spacing = spacing
         self._axis_lengths = (image.shape[0], image.shape[1])
@@ -513,13 +577,25 @@ class SliceView(pg.PlotWidget):
             self.threshold_item.clear()
         else:
             self.threshold_item.setImage(
-                threshold_overlay(threshold).transpose(1, 0, 2), autoLevels=False
+                threshold_overlay(threshold, color=(255, 174, 66)).transpose(1, 0, 2),
+                autoLevels=False,
             )
             self.threshold_item.setRect(rect)
-        if mask is None:
-            self.set_mask_overlay(None, labels)
+        if applied_threshold is None:
+            self.applied_threshold_item.clear()
         else:
-            self.set_mask_overlay(mask, labels, rect)
+            self.applied_threshold_item.setImage(
+                threshold_overlay(
+                    applied_threshold,
+                    opacity=threshold_opacity * global_opacity,
+                ).transpose(1, 0, 2),
+                autoLevels=False,
+            )
+            self.applied_threshold_item.setRect(rect)
+        if mask is None:
+            self.set_mask_overlay(None, labels, global_opacity=global_opacity)
+        else:
+            self.set_mask_overlay(mask, labels, rect, global_opacity)
         self.getPlotItem().setTitle(
             f"{self.plane}  |  {fixed_axis} {fixed_index + 1}",
             color="#dce8e9",
@@ -541,16 +617,35 @@ class SliceView(pg.PlotWidget):
         mask: np.ndarray | None,
         labels: dict[int, LabelDefinition] | None = None,
         rect: QRectF | None = None,
+        global_opacity: float = 1.0,
     ) -> None:
         if mask is None:
             self.mask_item.clear()
             return
         self.mask_item.setImage(
-            label_overlay(mask, labels).transpose(1, 0, 2), autoLevels=False
+            label_overlay(mask, labels, global_opacity=global_opacity).transpose(1, 0, 2),
+            autoLevels=False,
         )
         target_rect = rect if rect is not None else self._data_rect
         if target_rect is not None:
             self.mask_item.setRect(target_rect)
+
+    def set_applied_threshold_overlay(
+        self,
+        selection: np.ndarray | None,
+        opacity: float,
+        rect: QRectF | None = None,
+    ) -> None:
+        if selection is None:
+            self.applied_threshold_item.clear()
+            return
+        self.applied_threshold_item.setImage(
+            threshold_overlay(selection, opacity=opacity).transpose(1, 0, 2),
+            autoLevels=False,
+        )
+        target_rect = rect if rect is not None else self._data_rect
+        if target_rect is not None:
+            self.applied_threshold_item.setRect(target_rect)
 
     def set_contour(self, points: list[tuple[int, int]]) -> None:
         if not points:
@@ -559,6 +654,9 @@ class SliceView(pg.PlotWidget):
         x = [point[0] * self.spacing[0] for point in points]
         y = [point[1] * self.spacing[1] for point in points]
         self.contour_item.setData(x, y, connect="finite")
+
+    def set_lasso(self, points: list[tuple[int, int]]) -> None:
+        self.lasso_overlay.set_points(points, self.spacing)
 
     def _pan(self, delta_h: float, delta_v: float) -> None:
         self.getViewBox().translateBy(
@@ -602,6 +700,7 @@ class TemporalView(pg.PlotWidget):
         self._geometry_signature: tuple[float, ...] | None = None
         self.image_item = EditableImageItem()
         self.threshold_item = pg.ImageItem()
+        self.applied_threshold_item = pg.ImageItem()
         self.mask_item = pg.ImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
@@ -611,9 +710,11 @@ class TemporalView(pg.PlotWidget):
             symbolBrush=pg.mkBrush("#ffe082"),
         )
         self.threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.applied_threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.contour_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.threshold_item.setZValue(5)
+        self.applied_threshold_item.setZValue(6)
         self.mask_item.setZValue(10)
         self.contour_item.setZValue(20)
         self.time_line = pg.InfiniteLine(angle=0, pen=pg.mkPen(AXIS_COLORS["T"], width=1.3))
@@ -624,10 +725,12 @@ class TemporalView(pg.PlotWidget):
         self.spatial_line.setZValue(30)
         self.addItem(self.image_item)
         self.addItem(self.threshold_item)
+        self.addItem(self.applied_threshold_item)
         self.addItem(self.mask_item)
         self.addItem(self.contour_item)
         self.addItem(self.time_line)
         self.addItem(self.spatial_line)
+        self.lasso_overlay = LassoOverlay(self)
         self.footprint = FootprintOverlay(self)
         self.setMenuEnabled(False)
         self.hideButtons()
@@ -681,6 +784,9 @@ class TemporalView(pg.PlotWidget):
         labels: dict[int, LabelDefinition] | None = None,
         cursor: tuple[int, int] | None = None,
         threshold: np.ndarray | None = None,
+        applied_threshold: np.ndarray | None = None,
+        global_opacity: float = 1.0,
+        threshold_opacity: float = 1.0,
     ) -> None:
         self.mode = mode
         self.spacing = spacing
@@ -693,13 +799,25 @@ class TemporalView(pg.PlotWidget):
             self.threshold_item.clear()
         else:
             self.threshold_item.setImage(
-                threshold_overlay(threshold).transpose(1, 0, 2), autoLevels=False
+                threshold_overlay(threshold, color=(255, 174, 66)).transpose(1, 0, 2),
+                autoLevels=False,
             )
             self.threshold_item.setRect(rect)
-        if mask is None:
-            self.set_mask_overlay(None, labels)
+        if applied_threshold is None:
+            self.applied_threshold_item.clear()
         else:
-            self.set_mask_overlay(mask, labels, rect)
+            self.applied_threshold_item.setImage(
+                threshold_overlay(
+                    applied_threshold,
+                    opacity=threshold_opacity * global_opacity,
+                ).transpose(1, 0, 2),
+                autoLevels=False,
+            )
+            self.applied_threshold_item.setRect(rect)
+        if mask is None:
+            self.set_mask_overlay(None, labels, global_opacity=global_opacity)
+        else:
+            self.set_mask_overlay(mask, labels, rect, global_opacity)
         self.time_line.setValue(time_index)
         if cursor is not None:
             self.spatial_line.setValue(cursor[0] * spacing)
@@ -722,16 +840,35 @@ class TemporalView(pg.PlotWidget):
         mask: np.ndarray | None,
         labels: dict[int, LabelDefinition] | None = None,
         rect: QRectF | None = None,
+        global_opacity: float = 1.0,
     ) -> None:
         if mask is None:
             self.mask_item.clear()
             return
         self.mask_item.setImage(
-            label_overlay(mask, labels).transpose(1, 0, 2), autoLevels=False
+            label_overlay(mask, labels, global_opacity=global_opacity).transpose(1, 0, 2),
+            autoLevels=False,
         )
         target_rect = rect if rect is not None else self._data_rect
         if target_rect is not None:
             self.mask_item.setRect(target_rect)
+
+    def set_applied_threshold_overlay(
+        self,
+        selection: np.ndarray | None,
+        opacity: float,
+        rect: QRectF | None = None,
+    ) -> None:
+        if selection is None:
+            self.applied_threshold_item.clear()
+            return
+        self.applied_threshold_item.setImage(
+            threshold_overlay(selection, opacity=opacity).transpose(1, 0, 2),
+            autoLevels=False,
+        )
+        target_rect = rect if rect is not None else self._data_rect
+        if target_rect is not None:
+            self.applied_threshold_item.setRect(target_rect)
 
     def set_contour(self, points: list[tuple[int, int]]) -> None:
         if not points:
@@ -740,6 +877,9 @@ class TemporalView(pg.PlotWidget):
         x = [point[0] * self.spacing for point in points]
         y = [point[1] for point in points]
         self.contour_item.setData(x, y, connect="finite")
+
+    def set_lasso(self, points: list[tuple[int, int]]) -> None:
+        self.lasso_overlay.set_points(points, (self.spacing, 1.0))
 
     def _pan(self, delta_h: float, delta_v: float) -> None:
         self.getViewBox().translateBy(x=-delta_h * self.spacing, y=-delta_v)

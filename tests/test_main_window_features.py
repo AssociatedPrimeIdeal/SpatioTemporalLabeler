@@ -3,13 +3,14 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui import MainWindow
+from spatiotemporal_labeler.ui.label_panel import THRESHOLD_MASK_ITEM
 from spatiotemporal_labeler.ui.viewer_3d import Mask3DViewer
 
 
@@ -60,7 +61,7 @@ def test_threshold_constrains_brush_and_bypass_ignores_it():
     window.cursor = [3, 3, 0, 0]
     window.brush_diameter.setValue(1.0)
     window.threshold_panel.set_bounds(5.0, 10.0)
-    window.threshold_panel.enabled.setChecked(True)
+    window._apply_threshold_mask()
 
     window._stroke_started("X-Y", 3, 3)
     window._stroke_finished("X-Y", 3, 3)
@@ -73,6 +74,49 @@ def test_threshold_constrains_brush_and_bypass_ignores_it():
     window._stroke_finished("X-Y", 1, 3)
 
     assert mask.data[1, 3, 0, 0] == 1
+    finish_window(window, mask)
+
+
+def test_threshold_apply_creates_one_toggleable_replaceable_special_label():
+    image_data = np.zeros((7, 7, 1, 2), dtype=np.float32)
+    image_data[3:, :, :, :] = 10.0
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.threshold_panel.set_bounds(5.0, 10.0)
+
+    window._apply_threshold_mask()
+
+    first = window._applied_threshold_mask.copy()
+    threshold_items = [
+        window.label_panel.list_widget.item(row)
+        for row in range(window.label_panel.list_widget.count())
+        if window.label_panel.list_widget.item(row).data(Qt.ItemDataRole.UserRole)
+        == THRESHOLD_MASK_ITEM
+    ]
+    assert len(threshold_items) == 1
+    assert window._active_threshold_selection() is not None
+
+    window.threshold_panel.set_bounds(0.0, 0.0)
+    window._apply_threshold_mask()
+
+    assert not np.array_equal(window._applied_threshold_mask, first)
+    assert sum(
+        window.label_panel.list_widget.item(row).data(Qt.ItemDataRole.UserRole)
+        == THRESHOLD_MASK_ITEM
+        for row in range(window.label_panel.list_widget.count())
+    ) == 1
+    threshold_item = next(
+        window.label_panel.list_widget.item(row)
+        for row in range(window.label_panel.list_widget.count())
+        if window.label_panel.list_widget.item(row).data(Qt.ItemDataRole.UserRole)
+        == THRESHOLD_MASK_ITEM
+    )
+    threshold_item.setCheckState(Qt.CheckState.Unchecked)
+    assert window._active_threshold_selection() is None
+    window.label_panel.list_widget.setCurrentItem(threshold_item)
+    window.label_panel._delete_requested()
+    assert window._applied_threshold_mask is None
     finish_window(window, mask)
 
 
@@ -100,6 +144,52 @@ def test_held_all_frames_picker_and_region_barrier():
     assert np.all(mask.data[:3, :, 0, 0] == 1)
     assert np.all(mask.data[3, :, 0, 0] == 2)
     assert np.all(mask.data[4:, :, 0, 0] == 0)
+    finish_window(window, mask)
+
+
+def test_2d_lasso_erase_respects_all_time_frames_and_is_one_undo():
+    image_data = np.ones((9, 9, 1, 3), dtype=np.float32)
+    mask_data = np.ones(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    original = mask.data.copy()
+    window._set_tool("lasso")
+    window.all_frames_toggle.setChecked(True)
+
+    window._stroke_started("X-Y", 2, 2)
+    window._stroke_moved("X-Y", 6, 2)
+    window._stroke_moved("X-Y", 6, 6)
+    window._stroke_finished("X-Y", 2, 6)
+
+    assert np.all(mask.data[4, 4, 0, :] == 0)
+    assert np.all(mask.data[1, 1, 0, :] == 1)
+    assert window.slice_views["X-Y"].lasso_overlay.path.xData is None
+    assert len(window.slice_views["X-Y"].lasso_overlay.fill.polygon()) == 0
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_3d_lasso_uses_the_same_projected_region_in_all_time_frames():
+    image_data = np.ones((7, 7, 2, 3), dtype=np.float32)
+    mask_data = np.ones(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    selection = np.zeros(mask.data.shape[:3], dtype=bool)
+    selection[2:5, 2:5, :] = True
+    window.viewer_3d.lasso_voxel_mask = lambda *args, **kwargs: selection
+    cleared = []
+    window.viewer_3d.clear_lasso = lambda: cleared.append(None)
+    window._set_tool("lasso")
+    cleared.clear()
+    window.all_frames_toggle.setChecked(True)
+
+    window._lasso_3d_started()
+    window._lasso_3d_finished([(1.0, 1.0), (5.0, 1.0), (5.0, 5.0)])
+
+    assert np.all(mask.data[3, 3, :, :] == 0)
+    assert np.all(mask.data[0, 0, :, :] == 1)
+    assert cleared
+    assert len(window._undo_stack) == 1
     finish_window(window, mask)
 
 
@@ -262,7 +352,7 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     )
     window.cursor = [3, 3, 0, 0]
     assert window.threshold_panel.parent() is not window.grow_panel.parent()
-    window.threshold_panel.enabled.setChecked(True)
+    window.threshold_dock.show()
     window.threshold_panel.set_bounds(0.0, 10.0)
     before = int(window._threshold_selection().sum())
 
@@ -331,7 +421,7 @@ def test_local_threshold_preview_only_computes_the_current_frame():
         image_data, np.zeros(image_data.shape, dtype=np.uint8)
     )
     panel = window.threshold_panel
-    panel.enabled.setChecked(True)
+    window.threshold_dock.show()
     panel.method.blockSignals(True)
     panel.method.setCurrentIndex(panel.method.findData("local_gaussian"))
     panel.method.blockSignals(False)
@@ -353,19 +443,18 @@ def test_spatial_thresholded_brush_does_not_request_all_frames():
     window, _image, mask = make_window(
         image_data, np.zeros(image_data.shape, dtype=np.uint8)
     )
-    window.threshold_panel.enabled.setChecked(True)
     window.threshold_panel.set_percent_bounds(0.0, 100.0)
     window.cursor = [3, 3, 0, 0]
-    window._invalidate_threshold()
+    window._apply_threshold_mask()
     window._threshold_selection = lambda: (_ for _ in ()).throw(
-        AssertionError("spatial brush requested every threshold frame")
+        AssertionError("spatial brush recomputed an applied threshold mask")
     )
 
     window._stroke_started("X-Y", 3, 3)
     window._stroke_finished("X-Y", 3, 3)
 
     assert mask.data[3, 3, 0, 0] == 1
-    assert set(window._threshold_frame_cache) == {0}
+    assert mask.data[3, 3, 0, 0] == 1
     finish_window(window, mask)
 
 
@@ -447,8 +536,9 @@ def test_3d_viewer_builds_one_binary_surface_actor_per_label():
     frame[1:4, 1:4, 1:4] = 1
     frame[5:7, 5:7, 5:7] = 2
     labels = {1: default_label(1), 2: default_label(2)}
+    labels[1].opacity = 0.4
 
-    viewer.set_mask(frame, labels=labels, immediate=True)
+    viewer.set_mask(frame, labels=labels, immediate=True, global_opacity=0.5)
 
     assert set(viewer.segment_pipelines) == {1, 2}
     first = viewer.segment_pipelines[1]
@@ -456,6 +546,7 @@ def test_3d_viewer_builds_one_binary_surface_actor_per_label():
     assert first.actor is not second.actor
     assert first.mapper.GetScalarVisibility() == 0
     assert first.decimator.GetTargetReduction() > 0.0
+    assert np.isclose(first.actor.GetProperty().GetOpacity(), 0.2)
     viewer.close()
     viewer.deleteLater()
 
@@ -470,6 +561,68 @@ def test_3d_viewer_uses_non_inertial_trackball_interaction():
     assert style.GetUseTimers() == 0
     assert viewer.cursor_renderer.GetInteractive() == 0
     assert style.HasObserver("InteractionEvent")
+    viewer.close()
+    viewer.deleteLater()
+
+
+def test_3d_left_drag_is_reserved_for_lasso_and_alt_left_reaches_rotation():
+    ensure_application()
+    viewer = Mask3DViewer()
+
+    def mouse_event(
+        event_type: QEvent.Type,
+        button: Qt.MouseButton,
+        buttons: Qt.MouseButton,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> QMouseEvent:
+        return QMouseEvent(
+            event_type,
+            QPointF(8.0, 8.0),
+            QPointF(8.0, 8.0),
+            QPointF(8.0, 8.0),
+            button,
+            buttons,
+            modifiers,
+        )
+
+    plain_press = mouse_event(
+        QEvent.Type.MouseButtonPress,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+    )
+    assert viewer.eventFilter(viewer.vtk_widget, plain_press)
+
+    alt_press = mouse_event(
+        QEvent.Type.MouseButtonPress,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.AltModifier,
+    )
+    assert not viewer.eventFilter(viewer.vtk_widget, alt_press)
+    assert viewer._alt_rotate_active
+    alt_release = mouse_event(
+        QEvent.Type.MouseButtonRelease,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.AltModifier,
+    )
+    assert not viewer.eventFilter(viewer.vtk_widget, alt_release)
+    assert not viewer._alt_rotate_active
+
+    started = []
+    finished = []
+    viewer.set_lasso_enabled(True)
+    viewer.lassoStarted.connect(lambda: started.append(None))
+    viewer.lassoFinished.connect(lambda points: finished.append(points))
+    assert viewer.eventFilter(viewer.vtk_widget, plain_press)
+    plain_release = mouse_event(
+        QEvent.Type.MouseButtonRelease,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+    )
+    assert viewer.eventFilter(viewer.vtk_widget, plain_release)
+    assert started and finished
+    assert viewer._lasso_points == []
     viewer.close()
     viewer.deleteLater()
 
@@ -537,12 +690,14 @@ def test_brush_updates_all_2d_overlays_and_defers_3d_until_release():
     window._refresh_3d = lambda *args, **kwargs: surface_refreshes.append(None)
     for plane, view in window.slice_views.items():
         view.set_mask_overlay = (
-            lambda data, labels, plane=plane: overlay_refreshes[plane].append(
+            lambda data, labels, *args, plane=plane, **kwargs: overlay_refreshes[plane].append(
                 np.asarray(data).copy()
             )
         )
     window.temporal_view.set_mask_overlay = (
-        lambda data, labels: overlay_refreshes["X-T"].append(np.asarray(data).copy())
+        lambda data, labels, *args, **kwargs: overlay_refreshes["X-T"].append(
+            np.asarray(data).copy()
+        )
     )
 
     window._stroke_started("X-Y", 4, 4)

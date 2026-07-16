@@ -7,7 +7,8 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
 from spatiotemporal_labeler.ui.icons import tool_icon
-from spatiotemporal_labeler.ui.slice_view import EditableImageItem, SliceView
+from spatiotemporal_labeler.model import default_label
+from spatiotemporal_labeler.ui.slice_view import EditableImageItem, SliceView, label_overlay
 
 
 class ClickEvent:
@@ -116,6 +117,7 @@ def test_all_toolbar_icons_render_without_error():
         "redo",
         "brush",
         "eraser",
+        "lasso",
         "contour",
         "threshold",
         "window",
@@ -123,6 +125,35 @@ def test_all_toolbar_icons_render_without_error():
         assert not tool_icon(name, "#147b86").isNull()
 
     assert application is not None
+
+
+def test_label_overlay_combines_individual_and_global_opacity():
+    labels = np.ones((2, 2), dtype=np.uint8)
+    definition = default_label(1)
+    definition.opacity = 0.5
+
+    overlay = label_overlay(labels, {1: definition}, global_opacity=0.4)
+
+    assert np.all(overlay[..., 3] == round(124 * 0.5 * 0.4))
+
+
+def test_slice_lasso_shows_a_dashed_implicit_closing_edge():
+    ensure_application()
+    view = SliceView("X-Y")
+    view.set_slice(
+        np.zeros((10, 10), dtype=np.float32),
+        None,
+        (1.0, 1.0),
+        (0.0, 1.0),
+        "Z",
+        0,
+    )
+
+    view.set_lasso([(2, 2), (7, 2), (7, 7), (2, 7)])
+
+    assert len(view.lasso_overlay.fill.polygon()) == 4
+    assert view.lasso_overlay.closure.xData.tolist() == [2.0, 2.0]
+    assert view.lasso_overlay.closure.yData.tolist() == [7.0, 2.0]
 
 
 def test_shift_click_locates_without_starting_a_stroke():

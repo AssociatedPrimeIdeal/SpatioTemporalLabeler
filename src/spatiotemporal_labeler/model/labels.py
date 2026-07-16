@@ -31,6 +31,7 @@ class LabelDefinition:
     name: str
     color: tuple[int, int, int]
     visible: bool = True
+    opacity: float = 1.0
 
 
 def default_label(value: int) -> LabelDefinition:
@@ -45,7 +46,10 @@ def labels_from_sequence(sequence: Sequence4D) -> dict[int, LabelDefinition]:
             for item in json.loads(str(raw)):
                 value = int(item["value"])
                 color = tuple(int(channel) for channel in item["color"])
-                definitions[value] = LabelDefinition(value, str(item["name"]), color)
+                opacity = float(np.clip(float(item.get("opacity", 1.0)), 0.0, 1.0))
+                definitions[value] = LabelDefinition(
+                    value, str(item["name"]), color, opacity=opacity
+                )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             definitions = {}
     for value in np.unique(sequence.data):

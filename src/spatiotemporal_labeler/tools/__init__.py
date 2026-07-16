@@ -1,6 +1,13 @@
 """Segmentation editing operations."""
 
-from .editing import apply_disk, apply_square, fill_polygon, raster_line
+from .editing import (
+    apply_disk,
+    apply_square,
+    fill_polygon,
+    polygon_selection,
+    raster_line,
+    transform_selected_labels,
+)
 from .interpolation import interpolate_label_frames
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
@@ -32,5 +39,7 @@ __all__ = [
     "interpolate_label_frames",
     "kittler_threshold",
     "remove_small_components",
+    "polygon_selection",
     "raster_line",
+    "transform_selected_labels",
 ]

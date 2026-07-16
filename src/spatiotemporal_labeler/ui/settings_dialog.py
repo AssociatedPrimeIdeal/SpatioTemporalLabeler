@@ -27,6 +27,7 @@ from .render_settings import RenderSettings
 DEFAULT_SHORTCUTS = {
     "brush": "B",
     "eraser": "E",
+    "lasso": "S",
     "contour": "L",
     "picker": "I",
     "grow": "G",
@@ -41,6 +42,7 @@ SHORTCUT_LABELS = {
     "en": {
         "brush": "Brush",
         "eraser": "Eraser",
+        "lasso": "Scissors lasso",
         "contour": "Contour fill",
         "picker": "Hold to pick label",
         "grow": "Seed region grow",
@@ -53,6 +55,7 @@ SHORTCUT_LABELS = {
     "zh_CN": {
         "brush": "画笔",
         "eraser": "橡皮擦",
+        "lasso": "剪刀套索",
         "contour": "闭合线填充",
         "picker": "按住标签取色",
         "grow": "种子区域生长",

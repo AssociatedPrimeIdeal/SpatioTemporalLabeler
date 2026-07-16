@@ -23,12 +23,14 @@ def test_label_definitions_round_trip_through_header():
     definitions = labels_from_sequence(sequence)
     definitions[2].name = "Aorta"
     definitions[2].color = (10, 20, 30)
+    definitions[2].opacity = 0.35
     store_labels(sequence, definitions)
 
     restored = labels_from_sequence(sequence)
 
     assert restored[2].name == "Aorta"
     assert restored[2].color == (10, 20, 30)
+    assert restored[2].opacity == 0.35
 
 
 def test_english_is_available_as_default_interface_language():

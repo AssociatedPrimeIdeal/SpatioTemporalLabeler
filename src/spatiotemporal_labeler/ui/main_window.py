@@ -59,7 +59,9 @@ from spatiotemporal_labeler.tools import (
     connected_seed_region,
     fill_polygon,
     interpolate_label_frames,
+    polygon_selection,
     raster_line,
+    transform_selected_labels,
 )
 
 from .icons import tool_icon
@@ -68,6 +70,7 @@ from .image_strip import ImagePreviewStrip
 from .import_dialog import ImportSelectionDialog
 from .interpolation_panel import InterpolationPanel
 from .label_panel import LabelPanel
+from .lasso_panel import LassoPanel
 from .morphology_panel import MorphologyPanel
 from .region_grow_panel import RegionGrowPanel
 from .render_settings import RenderSettings
@@ -129,6 +132,13 @@ class MainWindow(QMainWindow):
         self._threshold_signature: tuple[object, ...] | None = None
         self._threshold_frame_cache: dict[int, np.ndarray] = {}
         self._threshold_frame_signature: tuple[object, ...] | None = None
+        self._applied_threshold_mask: np.ndarray | None = None
+        self._applied_threshold_image: Sequence4D | None = None
+        self._applied_threshold_visible = True
+        self._applied_threshold_opacity = 1.0
+        self._global_label_opacity = float(
+            np.clip(float(self.settings.value("labels/global_opacity", 1.0)), 0.0, 1.0)
+        )
         self._all_frames_held = False
         self._picker_held = False
         self._threshold_bypass_held = False
@@ -144,6 +154,11 @@ class MainWindow(QMainWindow):
         self._tool_before_grow = "brush"
         self._contour: list[tuple[int, int]] = []
         self._pending_contour: PendingContour | None = None
+        self._last_lasso_plane: str | None = None
+        self._lasso_3d_mask: Sequence4D | None = None
+        self._lasso_3d_frames: tuple[int, ...] = ()
+        self._lasso_3d_before: np.ndarray | None = None
+        self._lasso_3d_focus_frame = 0
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
         self._build_ui()
@@ -189,6 +204,16 @@ class MainWindow(QMainWindow):
         self.label_panel.addRequested.connect(self._add_label)
         self.label_panel.deleteRequested.connect(self._delete_label)
         self.label_panel.renameRequested.connect(self._rename_label)
+        self.label_panel.opacityChanged.connect(self._label_opacity_changed)
+        self.label_panel.thresholdVisibilityChanged.connect(
+            self._threshold_visibility_changed
+        )
+        self.label_panel.thresholdDeleteRequested.connect(self._delete_threshold_mask)
+        self.label_panel.thresholdOpacityChanged.connect(
+            self._threshold_opacity_changed
+        )
+        self.label_panel.globalOpacityChanged.connect(self._global_opacity_changed)
+        self.label_panel.set_global_opacity(self._global_label_opacity)
         splitter.addWidget(self.label_panel)
 
         slices = QWidget()
@@ -251,6 +276,8 @@ class MainWindow(QMainWindow):
         self.render_title.setObjectName("viewerTitle")
         render_layout.addWidget(self.render_title)
         self.viewer_3d = Mask3DViewer()
+        self.viewer_3d.lassoStarted.connect(self._lasso_3d_started)
+        self.viewer_3d.lassoFinished.connect(self._lasso_3d_finished)
         render_layout.addWidget(self.viewer_3d, 1)
         splitter.addWidget(render_panel)
         splitter.setStretchFactor(0, 0)
@@ -301,8 +328,8 @@ class MainWindow(QMainWindow):
         )
         self.threshold_panel = ThresholdPanel()
         self.threshold_panel.changed.connect(self._threshold_changed)
-        self.threshold_panel.enabled.toggled.connect(self._threshold_enabled_changed)
         self.threshold_panel.methodChanged.connect(self._threshold_method_changed)
+        self.threshold_panel.applyRequested.connect(self._apply_threshold_mask)
         self.threshold_dock.setWidget(self.threshold_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.threshold_dock)
         self.threshold_dock.hide()
@@ -315,6 +342,15 @@ class MainWindow(QMainWindow):
         self.grow_dock.setWidget(self.grow_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.grow_dock)
         self.grow_dock.hide()
+
+        self.lasso_dock = QDockWidget(self)
+        self.lasso_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.lasso_panel = LassoPanel()
+        self.lasso_dock.setWidget(self.lasso_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.lasso_dock)
+        self.lasso_dock.hide()
 
         self.morphology_dock = QDockWidget(self)
         self.morphology_dock.setAllowedAreas(
@@ -346,7 +382,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.display_dock)
         self.display_dock.hide()
         self.tabifyDockWidget(self.threshold_dock, self.grow_dock)
-        self.tabifyDockWidget(self.grow_dock, self.morphology_dock)
+        self.tabifyDockWidget(self.grow_dock, self.lasso_dock)
+        self.tabifyDockWidget(self.lasso_dock, self.morphology_dock)
         self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
         self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
 
@@ -391,11 +428,12 @@ class MainWindow(QMainWindow):
         tool_group = QActionGroup(self)
         tool_group.setExclusive(True)
         self.tool_actions: dict[str, QAction] = {}
-        for key in ("brush", "eraser", "contour", "picker", "grow"):
+        for key in ("brush", "eraser", "lasso", "contour", "picker", "grow"):
             action = QAction("", self, checkable=True)
             icon_color = {
                 "brush": "#087f8c",
                 "eraser": "#d95252",
+                "lasso": "#b66a15",
                 "contour": "#b77a00",
                 "picker": "#7259b8",
                 "grow": "#25834f",
@@ -410,10 +448,11 @@ class MainWindow(QMainWindow):
         self.tool_actions["brush"].setChecked(True)
 
         self.toolbar.addSeparator()
-        self.threshold_mask_action = QAction(
-            tool_icon("threshold", "#168894"), "", self, checkable=True
+        self.threshold_mask_action = self.threshold_dock.toggleViewAction()
+        self.threshold_mask_action.setIcon(tool_icon("threshold", "#168894"))
+        self.threshold_dock.visibilityChanged.connect(
+            lambda _visible: self.refresh_views()
         )
-        self.threshold_mask_action.toggled.connect(self._threshold_action_toggled)
         self.threshold_button = QToolButton()
         self.threshold_button.setDefaultAction(self.threshold_mask_action)
         self.threshold_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -503,7 +542,7 @@ class MainWindow(QMainWindow):
         self.addAction(increase)
         self.cancel_contour_action = QAction(self)
         self.cancel_contour_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        self.cancel_contour_action.triggered.connect(self._cancel_pending_contour)
+        self.cancel_contour_action.triggered.connect(self._cancel_active_selection)
         self.addAction(self.cancel_contour_action)
         self._brush_settings_changed()
 
@@ -558,7 +597,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "toolbar"):
             style = (
                 Qt.ToolButtonStyle.ToolButtonIconOnly
-                if event.size().width() < 1300
+                if event.size().width() < 1750
                 else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
             )
             self.toolbar.setToolButtonStyle(style)
@@ -576,6 +615,7 @@ class MainWindow(QMainWindow):
         self.mask_source_label.setText(self._tr("edit_mask"))
         self.temporal_header_label.setText(self._tr("temporal_view"))
         self.render_title.setText(self._tr("render_3d"))
+        self.viewer_3d.setToolTip(self._tr("viewer_3d_tip"))
         self.slider_axis_label.setText(self._tr("slider_axis"))
         self.slider_axis.setItemText(0, f"T {self._tr('time')}")
         self.toolbar.setWindowTitle(self._tr("toolbar"))
@@ -600,6 +640,7 @@ class MainWindow(QMainWindow):
         self.image_previews_action.setText(self._tr("image_previews"))
         self.threshold_dock.setWindowTitle(self._tr("threshold_dock"))
         self.grow_dock.setWindowTitle(self._tr("grow_dock"))
+        self.lasso_dock.setWindowTitle(self._tr("lasso_dock"))
         self.morphology_dock.setWindowTitle(self._tr("morphology_dock"))
         self.morphology_action.setText(self._tr("morphology"))
         self.interpolation_dock.setWindowTitle(self._tr("interpolation_dock"))
@@ -613,6 +654,7 @@ class MainWindow(QMainWindow):
         self.label_panel.set_language(self.language)
         self.threshold_panel.set_language(self.language)
         self.grow_panel.set_language(self.language)
+        self.lasso_panel.set_language(self.language)
         self.morphology_panel.set_language(self.language)
         self.interpolation_panel.set_language(self.language)
         self.window_level_panel.set_language(self.language)
@@ -647,7 +689,7 @@ class MainWindow(QMainWindow):
     def _apply_shortcuts(self) -> None:
         if not hasattr(self, "tool_actions"):
             return
-        for key in ("brush", "eraser", "contour", "grow"):
+        for key in ("brush", "eraser", "lasso", "contour", "grow"):
             self.tool_actions[key].setShortcut(QKeySequence(self.shortcuts.get(key, "")))
         self.tool_actions["picker"].setShortcut(QKeySequence())
 
@@ -711,6 +753,7 @@ class MainWindow(QMainWindow):
         self.cursor[3] = int(np.clip(previous + delta, 0, image.frame_count - 1))
         if self.cursor[3] == previous:
             return
+        self._clear_lasso_overlays()
         self.refresh_views()
         self._refresh_navigation_3d()
 
@@ -748,22 +791,6 @@ class MainWindow(QMainWindow):
         self._invalidate_threshold()
         self.refresh_views()
 
-    def _threshold_action_toggled(self, enabled: bool) -> None:
-        if self.threshold_panel.enabled.isChecked() != enabled:
-            self.threshold_panel.enabled.setChecked(enabled)
-        if enabled:
-            self.threshold_panel.preview.setChecked(True)
-            self.threshold_dock.show()
-            self.threshold_dock.raise_()
-
-    def _threshold_enabled_changed(self, enabled: bool) -> None:
-        if self.threshold_mask_action.isChecked() != enabled:
-            self.threshold_mask_action.blockSignals(True)
-            self.threshold_mask_action.setChecked(enabled)
-            self.threshold_mask_action.blockSignals(False)
-        if enabled:
-            self.threshold_panel.preview.setChecked(True)
-
     def _threshold_method_changed(self, method: str) -> None:
         image = self.active_image
         if image is None:
@@ -783,7 +810,7 @@ class MainWindow(QMainWindow):
         self,
     ) -> tuple[Sequence4D, str, float, float, int, tuple[object, ...]] | None:
         image = self.active_image
-        if image is None or not self.threshold_panel.enabled.isChecked():
+        if image is None:
             return None
         lower, upper = self.threshold_panel.intensity_bounds
         method = self.threshold_panel.method_key
@@ -828,6 +855,67 @@ class MainWindow(QMainWindow):
             }
             self._threshold_frame_signature = signature
         return self._threshold_cache
+
+    def _applied_threshold_is_active(self) -> bool:
+        image = self.active_image
+        selection = self._applied_threshold_mask
+        return bool(
+            self._applied_threshold_visible
+            and image is not None
+            and self._applied_threshold_image is image
+            and selection is not None
+            and selection.shape == image.data.shape
+        )
+
+    def _active_threshold_frame(self, frame: int) -> np.ndarray | None:
+        if not self._applied_threshold_is_active():
+            return None
+        selection = self._applied_threshold_mask
+        assert selection is not None
+        frame = int(np.clip(frame, 0, selection.shape[3] - 1))
+        return selection[..., frame]
+
+    def _active_threshold_selection(self) -> np.ndarray | None:
+        return self._applied_threshold_mask if self._applied_threshold_is_active() else None
+
+    def _apply_threshold_mask(self) -> None:
+        image, mask = self.active_image, self.active_mask
+        if image is None or mask is None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            selection = self._threshold_selection()
+            if selection is None:
+                return
+            self._applied_threshold_mask = np.asarray(selection, dtype=bool).copy()
+            self._applied_threshold_image = image
+            self._applied_threshold_visible = True
+        except Exception as error:
+            QMessageBox.critical(self, self._tr("threshold_failed"), str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._sync_label_panel()
+        self.refresh_views()
+        self.statusBar().showMessage(self._tr("threshold_applied"), 4000)
+
+    def _threshold_visibility_changed(self, visible: bool) -> None:
+        self._applied_threshold_visible = bool(visible)
+        self.refresh_views()
+
+    def _threshold_opacity_changed(self, opacity: float) -> None:
+        self._applied_threshold_opacity = float(np.clip(opacity, 0.0, 1.0))
+        self._refresh_label_overlays()
+
+    def _delete_threshold_mask(self) -> None:
+        if self._applied_threshold_mask is None:
+            return
+        self._applied_threshold_mask = None
+        self._applied_threshold_image = None
+        self._applied_threshold_visible = True
+        self._sync_label_panel()
+        self.refresh_views()
+        self.statusBar().showMessage(self._tr("threshold_deleted"), 3500)
 
     def _toggle_image_previews(self, enabled: bool) -> None:
         self.image_previews.set_collapsed(not enabled)
@@ -929,7 +1017,19 @@ class MainWindow(QMainWindow):
     def _sync_label_panel(self) -> None:
         mask = self.selected_mask
         definitions = self._labels_for(mask) if mask is not None else {}
-        self.label_panel.set_labels(definitions, self.active_label_value)
+        threshold_present = bool(
+            self.active_mask is not None
+            and self._applied_threshold_mask is not None
+            and self._applied_threshold_image is self.active_image
+        )
+        self.label_panel.set_labels(
+            definitions,
+            self.active_label_value,
+            threshold_present=threshold_present,
+            threshold_visible=self._applied_threshold_visible,
+            threshold_opacity=self._applied_threshold_opacity,
+        )
+        self.lasso_panel.set_labels(definitions, self.active_label_value)
 
     def open_import_dialog(self) -> None:
         selected, _ = QFileDialog.getOpenFileNames(
@@ -1075,6 +1175,10 @@ class MainWindow(QMainWindow):
 
     def _active_image_changed(self, _index: int) -> None:
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
+        self._applied_threshold_mask = None
+        self._applied_threshold_image = None
+        self._applied_threshold_visible = True
         image = self.active_image
         if image is None:
             self.refresh_views()
@@ -1145,6 +1249,7 @@ class MainWindow(QMainWindow):
 
     def _active_mask_changed(self, _index: int) -> None:
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         self._sync_label_panel()
         self._sync_interpolation_panel()
         self.refresh_views(update_3d=True)
@@ -1168,6 +1273,27 @@ class MainWindow(QMainWindow):
         definition.visible = visible
         self.refresh_views()
         self._refresh_3d()
+
+    def _label_opacity_changed(self, value: int, opacity: float) -> None:
+        mask = self.active_mask
+        definition = self.active_labels.get(value)
+        if mask is None or definition is None:
+            return
+        definition.opacity = float(np.clip(opacity, 0.0, 1.0))
+        mask.dirty = True
+        self._update_mask_combo_text()
+        self._refresh_label_overlays()
+        self.viewer_3d.set_label_opacities(
+            self.active_labels, self._global_label_opacity
+        )
+
+    def _global_opacity_changed(self, opacity: float) -> None:
+        self._global_label_opacity = float(np.clip(opacity, 0.0, 1.0))
+        self.settings.setValue("labels/global_opacity", self._global_label_opacity)
+        self._refresh_label_overlays()
+        self.viewer_3d.set_label_opacities(
+            self.active_labels, self._global_label_opacity
+        )
 
     def _add_label(self) -> None:
         mask = self.active_mask
@@ -1284,8 +1410,7 @@ class MainWindow(QMainWindow):
         mask = self.active_mask
         labels = self.active_labels
         show_threshold = (
-            self.threshold_panel.enabled.isChecked()
-            and self.threshold_panel.preview.isChecked()
+            not self.threshold_dock.isHidden() and self.threshold_panel.preview.isChecked()
         )
         threshold_parameters = self._threshold_parameters() if show_threshold else None
         threshold_method = threshold_parameters[1] if threshold_parameters is not None else None
@@ -1295,6 +1420,7 @@ class MainWindow(QMainWindow):
             if threshold_parameters is not None and not bounds_only_threshold
             else None
         )
+        applied_threshold = self._active_threshold_selection()
         for plane, view in self.slice_views.items():
             h_axis, v_axis, fixed_axis = PLANE_AXES[plane]
             image_plane = self._extract_spatial(image, plane)
@@ -1316,6 +1442,13 @@ class MainWindow(QMainWindow):
                 labels,
                 (self.cursor[h_axis], self.cursor[v_axis]),
                 threshold_plane,
+                (
+                    self._extract_spatial_data(applied_threshold, plane)
+                    if applied_threshold is not None
+                    else None
+                ),
+                self._global_label_opacity,
+                self._applied_threshold_opacity,
             )
         mode = self.temporal_mode.currentText()
         if mode == "X-T":
@@ -1343,6 +1476,11 @@ class MainWindow(QMainWindow):
                     threshold_temporal[:, frame] = self._extract_temporal_line(
                         frame_selection, mode
                     )
+        applied_threshold_temporal = (
+            self._extract_temporal_line(applied_threshold, mode)
+            if applied_threshold is not None
+            else None
+        )
         self.temporal_view.set_sequence_slice(
             image_temporal,
             mask_temporal,
@@ -1354,6 +1492,9 @@ class MainWindow(QMainWindow):
             labels,
             (self.cursor[TEMPORAL_AXES[mode]], t),
             threshold_temporal,
+            applied_threshold_temporal,
+            self._global_label_opacity,
+            self._applied_threshold_opacity,
         )
         self._sync_slider()
         self.viewer_3d.set_cursor(
@@ -1379,6 +1520,7 @@ class MainWindow(QMainWindow):
             origin=mask.transform.origin_ras,
             direction=mask.transform.direction_ras,
             immediate=immediate,
+            global_opacity=self._global_label_opacity,
         )
 
     def _refresh_navigation_3d(self) -> None:
@@ -1393,6 +1535,35 @@ class MainWindow(QMainWindow):
             origin=mask.transform.origin_ras,
             direction=mask.transform.direction_ras,
             immediate=False,
+            global_opacity=self._global_label_opacity,
+        )
+
+    def _refresh_label_overlays(self) -> None:
+        mask = self.active_mask
+        if mask is None:
+            return
+        labels = self.active_labels
+        applied = self._active_threshold_selection()
+        for plane, view in self.slice_views.items():
+            view.set_mask_overlay(
+                self._extract_spatial(mask, plane),
+                labels,
+                global_opacity=self._global_label_opacity,
+            )
+            view.set_applied_threshold_overlay(
+                self._extract_spatial_data(applied, plane) if applied is not None else None,
+                self._applied_threshold_opacity * self._global_label_opacity,
+            )
+        mode = self.temporal_mode.currentText()
+        view = self.temporal_view
+        view.set_mask_overlay(
+            self._extract_temporal_line(mask.data, mode),
+            labels,
+            global_opacity=self._global_label_opacity,
+        )
+        view.set_applied_threshold_overlay(
+            self._extract_temporal_line(applied, mode) if applied is not None else None,
+            self._applied_threshold_opacity * self._global_label_opacity,
         )
 
     def _stroke_started(
@@ -1418,6 +1589,7 @@ class MainWindow(QMainWindow):
             return
         if temporary_erase and self._pending_contour is not None:
             self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         self._stroke_mask = mask
         self._stroke_tool = effective_tool
         self._stroke_ignore_threshold = self._threshold_bypass_held
@@ -1435,6 +1607,8 @@ class MainWindow(QMainWindow):
         self._contour = [(h, v)]
         if self._stroke_tool == "contour":
             self._view_for_plane(plane).set_contour(self._contour)
+        elif self._stroke_tool == "lasso":
+            self._view_for_plane(plane).set_lasso(self._contour)
         else:
             self._paint_to(plane, h, v)
 
@@ -1443,10 +1617,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._stroke_before is None or not self._valid_plane_point(plane, h, v):
             return
-        if self._stroke_tool == "contour":
+        if self._stroke_tool in {"contour", "lasso"}:
             if not self._contour or self._contour[-1] != (h, v):
                 self._contour.extend(raster_line(self._contour[-1], (h, v))[1:])
-                self._view_for_plane(plane).set_contour(self._contour)
+                if self._stroke_tool == "contour":
+                    self._view_for_plane(plane).set_contour(self._contour)
+                else:
+                    self._view_for_plane(plane).set_lasso(self._contour)
         else:
             self._paint_to(plane, h, v)
 
@@ -1473,9 +1650,139 @@ class MainWindow(QMainWindow):
             self._clear_stroke(keep_contour=True)
             self.statusBar().showMessage(self._tr("contour_pending"), 6000)
             return
+        if self._stroke_tool == "lasso":
+            if self._valid_plane_point(plane, h, v) and self._contour[-1] != (h, v):
+                self._contour.extend(raster_line(self._contour[-1], (h, v))[1:])
+            self._view_for_plane(plane).set_lasso(self._contour)
+            self._last_lasso_plane = plane
+            changed = self._apply_lasso_to_planes(mask, plane, self._contour)
+            self._commit_stroke(mask, before)
+            self._clear_lasso_overlays()
+            self.statusBar().showMessage(
+                self._tr(
+                    "lasso_applied" if changed else "lasso_no_changes",
+                    count=changed,
+                ),
+                4500,
+            )
+            return
         if self._valid_plane_point(plane, h, v):
             self._paint_to(plane, h, v)
         self._commit_stroke(mask, before)
+
+    def _apply_lasso_to_planes(
+        self,
+        mask: Sequence4D,
+        plane: str,
+        points: list[tuple[int, int]],
+    ) -> int:
+        if plane in TEMPORAL_AXES:
+            planes = [self._mutable_plane(mask, plane, None, self._stroke_context)]
+        else:
+            planes = [
+                self._mutable_plane(mask, plane, frame, self._stroke_context)
+                for frame in self._stroke_frames
+            ]
+        if not planes:
+            return 0
+        selection = polygon_selection(planes[0].shape, points)
+        source = self.lasso_panel.source_value(self.active_label_value)
+        target = (
+            self.lasso_panel.target_value
+            if self.lasso_panel.operation_key == "replace"
+            else 0
+        )
+        if source is not None and source == target:
+            self.statusBar().showMessage(self._tr("lasso_same_label"), 4000)
+            return 0
+        return sum(
+            transform_selected_labels(plane_data, selection, target, source)
+            for plane_data in planes
+        )
+
+    def _lasso_3d_started(self) -> None:
+        if self.tool != "lasso":
+            return
+        for view in [*self.slice_views.values(), self.temporal_view]:
+            view.set_lasso([])
+        mask = self.active_mask
+        if mask is None:
+            return
+        self._lasso_3d_mask = mask
+        self._lasso_3d_focus_frame = self.cursor[3]
+        self._lasso_3d_frames = (
+            tuple(range(mask.frame_count))
+            if self.all_frames_toggle.isChecked() or self._all_frames_held
+            else (self.cursor[3],)
+        )
+        self._lasso_3d_before = mask.data[..., list(self._lasso_3d_frames)].copy()
+
+    def _lasso_3d_finished(self, points: object) -> None:
+        mask = self._lasso_3d_mask
+        before = self._lasso_3d_before
+        if mask is None or before is None or mask is not self.active_mask:
+            self._clear_lasso_3d_state()
+            return
+        point_list = [(float(x), float(y)) for x, y in list(points)]
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            selection = self.viewer_3d.lasso_voxel_mask(
+                tuple(mask.data.shape[:3]),
+                point_list,
+                spacing=mask.spacing_xyz,
+                origin=mask.transform.origin_ras,
+                direction=mask.transform.direction_ras,
+            )
+            source = self.lasso_panel.source_value(self.active_label_value)
+            target = (
+                self.lasso_panel.target_value
+                if self.lasso_panel.operation_key == "replace"
+                else 0
+            )
+            if source is not None and source == target:
+                self.statusBar().showMessage(self._tr("lasso_same_label"), 4000)
+                changed = 0
+            else:
+                changed = sum(
+                    transform_selected_labels(
+                        mask.data[..., frame], selection, target, source
+                    )
+                    for frame in self._lasso_3d_frames
+                )
+        except Exception as error:
+            mask.data[..., list(self._lasso_3d_frames)] = before
+            self._clear_lasso_3d_state()
+            self.viewer_3d.clear_lasso()
+            QMessageBox.critical(self, self._tr("lasso_failed"), str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        command = build_edit_command(
+            mask,
+            self._lasso_3d_frames,
+            before,
+            self._lasso_3d_focus_frame,
+        )
+        if command is not None:
+            mask.dirty = True
+            self._undo_stack.append(command)
+            self._undo_stack = self._undo_stack[-30:]
+            self._redo_stack.clear()
+        self._clear_lasso_3d_state()
+        self.viewer_3d.clear_lasso()
+        self._update_mask_combo_text()
+        self.refresh_views()
+        self._refresh_3d()
+        self._update_enabled_state()
+        self.statusBar().showMessage(
+            self._tr("lasso_applied" if changed else "lasso_no_changes", count=changed),
+            4500,
+        )
+
+    def _clear_lasso_3d_state(self) -> None:
+        self._lasso_3d_mask = None
+        self._lasso_3d_frames = ()
+        self._lasso_3d_before = None
 
     def _paint_to(self, plane: str, h: int, v: int) -> None:
         mask, image = self._stroke_mask, self.active_image
@@ -1493,19 +1800,19 @@ class MainWindow(QMainWindow):
                 for frame in self._stroke_frames
             ]
         threshold_enabled = (
-            not self._stroke_ignore_threshold and self._threshold_parameters() is not None
+            not self._stroke_ignore_threshold and self._applied_threshold_is_active()
         )
         if not threshold_enabled:
             allowed_planes: list[np.ndarray | None] = [None] * len(planes)
         elif plane in TEMPORAL_AXES:
-            threshold = self._threshold_selection()
+            threshold = self._active_threshold_selection()
             allowed_planes = [
                 self._array_plane(threshold, plane, None, self._stroke_context)
             ]
         else:
             allowed_planes = [
                 self._array_spatial_frame(
-                    self._threshold_frame(frame), plane, self._stroke_context
+                    self._active_threshold_frame(frame), plane, self._stroke_context
                 )
                 for frame in self._stroke_frames
             ]
@@ -1537,7 +1844,9 @@ class MainWindow(QMainWindow):
             mask_plane = self._array_plane(
                 mask.data, plane, frame, self._plane_context(plane)
             )
-            self._view_for_plane(plane).set_mask_overlay(mask_plane, labels)
+            self._view_for_plane(plane).set_mask_overlay(
+                mask_plane, labels, global_opacity=self._global_label_opacity
+            )
 
     def _confirm_contour(self, plane: str) -> None:
         pending = self._pending_contour
@@ -1555,17 +1864,17 @@ class MainWindow(QMainWindow):
                 for frame in pending.frames
             ]
         threshold_enabled = (
-            not pending.ignore_threshold and self._threshold_parameters() is not None
+            not pending.ignore_threshold and self._applied_threshold_is_active()
         )
         if not threshold_enabled:
             allowed_planes: list[np.ndarray | None] = [None] * len(planes)
         elif plane in TEMPORAL_AXES:
-            threshold = self._threshold_selection()
+            threshold = self._active_threshold_selection()
             allowed_planes = [self._array_plane(threshold, plane, None, pending.context)]
         else:
             allowed_planes = [
                 self._array_spatial_frame(
-                    self._threshold_frame(frame), plane, pending.context
+                    self._active_threshold_frame(frame), plane, pending.context
                 )
                 for frame in pending.frames
             ]
@@ -1620,6 +1929,19 @@ class MainWindow(QMainWindow):
         self._contour = []
         if not silent:
             self.statusBar().showMessage(self._tr("contour_cancelled"), 3000)
+
+    def _clear_lasso_overlays(self) -> None:
+        for view in [*self.slice_views.values(), self.temporal_view]:
+            view.set_lasso([])
+        self.viewer_3d.clear_lasso()
+        self._last_lasso_plane = None
+
+    def _cancel_active_selection(self) -> None:
+        self._cancel_pending_contour()
+        if self._stroke_tool == "lasso" and self._stroke_before is not None:
+            self._clear_stroke()
+        self._clear_lasso_3d_state()
+        self._clear_lasso_overlays()
 
     def _plane_context(self, plane: str) -> tuple[int, ...]:
         x, y, z = self.cursor[:3]
@@ -1734,7 +2056,7 @@ class MainWindow(QMainWindow):
             return
         voxel = self._voxel_for_plane(plane, h, v)
         x, y, z, frame = voxel
-        threshold = self._threshold_frame(frame)
+        threshold = self._active_threshold_frame(frame)
         if threshold is not None and not bool(threshold[x, y, z]):
             self.statusBar().showMessage(self._tr("grow_outside_mask"), 3000)
             return
@@ -1781,6 +2103,7 @@ class MainWindow(QMainWindow):
         if mask is None or not self.active_labels:
             return
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         frames = (
             tuple(range(mask.frame_count))
             if self.morphology_panel.frames_scope.currentData() == "all"
@@ -1832,6 +2155,7 @@ class MainWindow(QMainWindow):
         if mask is None or not self.active_labels:
             return
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         start = self.interpolation_panel.start_frame.value() - 1
         end = self.interpolation_panel.end_frame.value() - 1
         frames = tuple(range(start + 1, end))
@@ -1883,6 +2207,7 @@ class MainWindow(QMainWindow):
         if not self._undo_stack:
             return
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         command = self._undo_stack.pop()
         command.undo()
         self._redo_stack.append(command)
@@ -1892,6 +2217,7 @@ class MainWindow(QMainWindow):
         if not self._redo_stack:
             return
         self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
         command = self._redo_stack.pop()
         command.redo()
         self._undo_stack.append(command)
@@ -1929,6 +2255,7 @@ class MainWindow(QMainWindow):
         self.image_previews.set_plane(plane, emit=False)
         h_axis, v_axis, _ = PLANE_AXES[plane]
         self.cursor[h_axis], self.cursor[v_axis] = h, v
+        self._clear_lasso_overlays()
         self.refresh_views()
 
     def _step_slice(self, plane: str, delta: int) -> None:
@@ -1939,6 +2266,7 @@ class MainWindow(QMainWindow):
         self.cursor[fixed_axis] = int(
             np.clip(self.cursor[fixed_axis] + delta, 0, image.data.shape[fixed_axis] - 1)
         )
+        self._clear_lasso_overlays()
         self.refresh_views()
 
     def _spatial_axis_requested(self, axis_name: str, index: int) -> None:
@@ -1950,6 +2278,7 @@ class MainWindow(QMainWindow):
         if target == self.cursor[axis]:
             return
         self.cursor[axis] = target
+        self._clear_lasso_overlays()
         self.refresh_views()
 
     def _temporal_cursor_requested(self, mode: str, axis_index: int, time_index: int) -> None:
@@ -1960,6 +2289,7 @@ class MainWindow(QMainWindow):
         axis = TEMPORAL_AXES[mode]
         self.cursor[axis] = int(np.clip(axis_index, 0, image.data.shape[axis] - 1))
         self.cursor[3] = int(np.clip(time_index, 0, image.frame_count - 1))
+        self._clear_lasso_overlays()
         self.refresh_views()
         self._refresh_navigation_3d()
 
@@ -1968,6 +2298,7 @@ class MainWindow(QMainWindow):
             self._cancel_pending_contour(silent=True)
         if self._maximized_plane in TEMPORAL_AXES:
             self._maximized_plane = self.temporal_mode.currentText()
+        self._clear_lasso_overlays()
         self.refresh_views()
 
     def _slider_axis_changed(self, _index: int = 0) -> None:
@@ -1984,6 +2315,7 @@ class MainWindow(QMainWindow):
         axis = int(self.slider_axis.currentData())
         old_time = self.cursor[3]
         self.cursor[axis] = value
+        self._clear_lasso_overlays()
         self.refresh_views()
         if axis == 3 and value != old_time:
             self._refresh_navigation_3d()
@@ -2022,6 +2354,8 @@ class MainWindow(QMainWindow):
         previous = self.tool
         if self.tool != name:
             self._cancel_pending_contour(silent=True)
+            self._clear_lasso_overlays()
+            self._clear_lasso_3d_state()
         if name == "grow" and previous != "grow":
             self._tool_before_grow = previous
         self.tool = name
@@ -2030,6 +2364,12 @@ class MainWindow(QMainWindow):
             self.grow_dock.raise_()
         elif previous == "grow":
             self.grow_dock.hide()
+        if name == "lasso":
+            self.lasso_dock.show()
+            self.lasso_dock.raise_()
+        elif previous == "lasso":
+            self.lasso_dock.hide()
+        self.viewer_3d.set_lasso_enabled(name == "lasso")
         self._brush_settings_changed()
         self.statusBar().showMessage(self._tr(f"tool_{name}"), 3500)
 
@@ -2081,8 +2421,10 @@ class MainWindow(QMainWindow):
         self.label_panel.setEnabled(has_mask)
         self.all_frames_toggle.setEnabled(has_mask)
         self.threshold_panel.setEnabled(has_image)
+        self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
         self.threshold_mask_action.setEnabled(has_image)
         self.grow_panel.setEnabled(has_image and has_mask)
+        self.lasso_panel.setEnabled(has_mask and has_label)
         self.morphology_panel.setEnabled(has_mask and has_label)
         self.morphology_action.setEnabled(has_mask and has_label)
         self.interpolation_panel.setEnabled(has_mask and has_label and self.active_mask.frame_count >= 3)

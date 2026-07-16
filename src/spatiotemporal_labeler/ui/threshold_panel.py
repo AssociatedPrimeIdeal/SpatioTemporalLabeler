@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -36,6 +37,7 @@ METHOD_NAMES = {
 class ThresholdPanel(QWidget):
     changed = Signal()
     methodChanged = Signal(str)
+    applyRequested = Signal()
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
@@ -43,9 +45,6 @@ class ThresholdPanel(QWidget):
         self._image_maximum = 1.0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.enabled = QCheckBox()
-        self.enabled.toggled.connect(self.changed)
-        layout.addWidget(self.enabled)
         self.preview = QCheckBox()
         self.preview.setChecked(True)
         self.preview.toggled.connect(self.changed)
@@ -84,6 +83,9 @@ class ThresholdPanel(QWidget):
         self.radius_label = QLabel()
         form.addRow(self.radius_label, self.radius)
         layout.addLayout(form)
+        self.apply_button = QPushButton()
+        self.apply_button.clicked.connect(self.applyRequested)
+        layout.addWidget(self.apply_button)
         layout.addStretch()
         self.set_language("en")
 
@@ -131,12 +133,12 @@ class ThresholdPanel(QWidget):
 
     def set_language(self, language: str) -> None:
         chinese = language == "zh_CN"
-        self.enabled.setText("启用阈值蒙版" if chinese else "Enable threshold mask")
         self.preview.setText("实时预览生效范围" if chinese else "Live selection preview")
         self.method_label.setText("方法" if chinese else "Method")
         self.lower_label.setText("下限" if chinese else "Lower")
         self.upper_label.setText("上限" if chinese else "Upper")
         self.radius_label.setText("局部半径" if chinese else "Local radius")
+        self.apply_button.setText("应用阈值蒙版" if chinese else "Apply threshold mask")
 
     @property
     def method_key(self) -> str:

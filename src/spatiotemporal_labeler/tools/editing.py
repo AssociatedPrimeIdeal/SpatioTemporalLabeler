@@ -104,3 +104,31 @@ def fill_polygon(
         if 0 <= h < plane.shape[0] and 0 <= v < plane.shape[1]:
             plane[h, v] = value
     return slice(h_min, h_max + 1), slice(v_min, v_max + 1)
+
+
+def polygon_selection(
+    shape: tuple[int, int], points: Sequence[tuple[int, int]]
+) -> NDArray[np.bool_]:
+    """Return the rasterized interior and boundary of an implicitly closed polygon."""
+    selection = np.zeros(shape, dtype=np.uint8)
+    fill_polygon(selection, points, 1)
+    return selection.astype(bool, copy=False)
+
+
+def transform_selected_labels(
+    labels: NDArray[np.integer],
+    selection: NDArray[np.bool_],
+    target_value: int,
+    source_value: int | None = None,
+) -> int:
+    """Replace selected label voxels, optionally filtering by one source value."""
+    data = np.asarray(labels)
+    selected = np.asarray(selection, dtype=bool)
+    if data.shape != selected.shape:
+        raise ValueError(
+            f"Label selection shape {selected.shape} does not match data {data.shape}"
+        )
+    eligible = selected & (data != 0 if source_value is None else data == source_value)
+    changed = eligible & (data != int(target_value))
+    data[changed] = int(target_value)
+    return int(np.count_nonzero(changed))

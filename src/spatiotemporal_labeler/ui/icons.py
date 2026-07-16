@@ -29,6 +29,12 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawLine(QPointF(1, -4), QPointF(1, 4))
             painter.restore()
             painter.drawLine(QPointF(5, 20), QPointF(18, 20))
+        elif name == "lasso":
+            painter.drawEllipse(QRectF(3.5, 4.5, 6.5, 6.5))
+            painter.drawEllipse(QRectF(3.5, 13, 6.5, 6.5))
+            painter.drawLine(QPointF(9, 9), QPointF(20, 19))
+            painter.drawLine(QPointF(9, 15), QPointF(20, 5))
+            painter.drawLine(QPointF(16.5, 8.2), QPointF(21, 4.5))
         elif name == "contour":
             vertices = [
                 QPointF(5, 17),

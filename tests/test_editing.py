@@ -1,6 +1,13 @@
 import numpy as np
 
-from spatiotemporal_labeler.tools import apply_disk, apply_square, fill_polygon, raster_line
+from spatiotemporal_labeler.tools import (
+    apply_disk,
+    apply_square,
+    fill_polygon,
+    polygon_selection,
+    raster_line,
+    transform_selected_labels,
+)
 
 
 def test_disk_uses_physical_spacing():
@@ -50,3 +57,17 @@ def test_raster_line_contains_each_pixel_without_gaps():
         max(abs(next_h - h), abs(next_v - v)) == 1
         for (h, v), (next_h, next_v) in zip(points, points[1:])
     )
+
+
+def test_lasso_selection_is_implicitly_closed_and_transforms_only_source_label():
+    labels = np.zeros((12, 12), dtype=np.uint8)
+    labels[2:10, 2:10] = 1
+    labels[5, 5] = 2
+    selection = polygon_selection((12, 12), [(3, 3), (8, 3), (8, 8), (3, 8)])
+
+    changed = transform_selected_labels(labels, selection, 3, source_value=1)
+
+    assert changed > 0
+    assert labels[4, 4] == 3
+    assert labels[5, 5] == 2
+    assert labels[2, 2] == 1
