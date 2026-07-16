@@ -5,7 +5,13 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
-from PySide6.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsRectItem
+from PySide6.QtGui import QPainter, QPainterPath, QPolygonF
+from PySide6.QtWidgets import (
+    QApplication,
+    QGraphicsEllipseItem,
+    QGraphicsObject,
+    QGraphicsRectItem,
+)
 
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
@@ -19,6 +25,81 @@ PLANE_DIRECTIONS = {
 }
 TEMPORAL_DIRECTIONS = {"X-T": "L - R", "Y-T": "P - A", "Z-T": "F - H"}
 AXIS_COLORS = {"X": "#ff5f5f", "Y": "#58d178", "Z": "#579dff", "T": "#f1cc4b"}
+
+
+class LocatorHandle(QGraphicsObject):
+    """Fixed-size triangular drag handle for one spatial-cursor coordinate."""
+
+    dragged = Signal(float)
+
+    def __init__(
+        self,
+        view_box: pg.ViewBox,
+        coordinate: int,
+        direction: tuple[float, float],
+        color: str,
+    ) -> None:
+        super().__init__()
+        self._view_box = view_box
+        self._coordinate = coordinate
+        self._direction = direction
+        self._color = pg.mkColor(color)
+        self._hovered = False
+        self.setFlag(self.GraphicsItemFlag.ItemIgnoresTransformations)
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setZValue(45)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802 - Qt API
+        return QRectF(-9.0, -9.0, 18.0, 18.0)
+
+    def _polygon(self) -> QPolygonF:
+        dx, dy = self._direction
+        perpendicular_x, perpendicular_y = -dy, dx
+        return QPolygonF(
+            [
+                QPointF(dx * 6.5, dy * 6.5),
+                QPointF(
+                    -dx * 4.5 + perpendicular_x * 5.0,
+                    -dy * 4.5 + perpendicular_y * 5.0,
+                ),
+                QPointF(
+                    -dx * 4.5 - perpendicular_x * 5.0,
+                    -dy * 4.5 - perpendicular_y * 5.0,
+                ),
+            ]
+        )
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addEllipse(self.boundingRect())
+        return path
+
+    def paint(self, painter: QPainter, *_args: Any) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        fill = self._color.lighter(135) if self._hovered else self._color
+        painter.setPen(pg.mkPen(fill.lighter(150), width=1.0))
+        painter.setBrush(pg.mkBrush(fill))
+        painter.drawPolygon(self._polygon())
+
+    def hoverEvent(self, event: Any) -> None:  # noqa: N802 - pyqtgraph API
+        hovered = not event.isExit() and event.acceptDrags(Qt.MouseButton.LeftButton)
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self.setCursor(
+                Qt.CursorShape.OpenHandCursor
+                if hovered
+                else Qt.CursorShape.ArrowCursor
+            )
+            self.update()
+
+    def mouseDragEvent(self, event: Any) -> None:  # noqa: N802 - pyqtgraph API
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        point = self._view_box.mapSceneToView(event.scenePos())
+        self.dragged.emit(float(point.x() if self._coordinate == 0 else point.y()))
+        event.accept()
 
 
 class FootprintOverlay:
@@ -250,6 +331,7 @@ class SliceView(pg.PlotWidget):
     navigateRequested = Signal(str, int, int)
     viewDoubleClicked = Signal(str)
     sliceStepRequested = Signal(str, int)
+    locatorDragged = Signal(str, int)
     brushSizeStepRequested = Signal(int)
     hoverMoved = Signal(str, int, int, bool)
     windowLevelDragged = Signal(float, float)
@@ -275,6 +357,8 @@ class SliceView(pg.PlotWidget):
             "X-Z": ("X", "Z", "Y"),
             "Y-Z": ("Y", "Z", "X"),
         }[plane]
+        self._locator_axes = (h_axis, v_axis)
+        self._axis_lengths = (0, 0)
         self.crosshair_vertical = pg.InfiniteLine(
             angle=90, movable=False, pen=pg.mkPen(AXIS_COLORS[h_axis], width=1.3)
         )
@@ -295,6 +379,26 @@ class SliceView(pg.PlotWidget):
         self.addItem(self.contour_item)
         self.addItem(self.crosshair_vertical)
         self.addItem(self.crosshair_horizontal)
+        view_box = self.getViewBox()
+        self._locator_handles = (
+            (
+                LocatorHandle(view_box, 0, (0.0, -1.0), AXIS_COLORS[h_axis]),
+                LocatorHandle(view_box, 0, (0.0, 1.0), AXIS_COLORS[h_axis]),
+            ),
+            (
+                LocatorHandle(view_box, 1, (1.0, 0.0), AXIS_COLORS[v_axis]),
+                LocatorHandle(view_box, 1, (-1.0, 0.0), AXIS_COLORS[v_axis]),
+            ),
+        )
+        for coordinate, handles in enumerate(self._locator_handles):
+            for handle in handles:
+                self.addItem(handle)
+                handle.dragged.connect(
+                    lambda value, coordinate=coordinate: self._locator_dragged(
+                        coordinate, value
+                    )
+                )
+        view_box.sigRangeChanged.connect(self._update_locator_handles)
         self.footprint = FootprintOverlay(self)
         self.setMenuEnabled(False)
         self.hideButtons()
@@ -336,6 +440,45 @@ class SliceView(pg.PlotWidget):
         self.strokeFinished.emit(self.plane, h, v, temporary_erase)
         self.footprint.set_temporary_erase(False)
 
+    def _locator_dragged(self, coordinate: int, value: float) -> None:
+        length = self._axis_lengths[coordinate]
+        if length <= 0:
+            return
+        spacing = self.spacing[coordinate]
+        index = int(np.clip(np.floor(value / spacing + 0.5), 0, length - 1))
+        self.locatorDragged.emit(self._locator_axes[coordinate], index)
+
+    def _update_locator_handles(self, *_args: Any) -> None:
+        if self._data_rect is None:
+            for handles in self._locator_handles:
+                for handle in handles:
+                    handle.hide()
+            return
+        x_range, y_range = self.getViewBox().viewRange()
+        left = max(self._data_rect.left(), min(x_range))
+        right = min(self._data_rect.right(), max(x_range))
+        bottom = max(self._data_rect.top(), min(y_range))
+        top = min(self._data_rect.bottom(), max(y_range))
+        pixel_width, pixel_height = map(abs, self.getViewBox().viewPixelSize())
+        inset_x = min(pixel_width * 8.0, max(0.0, (right - left) / 4.0))
+        inset_y = min(pixel_height * 8.0, max(0.0, (top - bottom) / 4.0))
+
+        x = float(self.crosshair_vertical.value())
+        vertical_visible = left <= x <= right and bottom <= top
+        for handle in self._locator_handles[0]:
+            handle.setVisible(vertical_visible)
+        if vertical_visible:
+            self._locator_handles[0][0].setPos(x, bottom + inset_y)
+            self._locator_handles[0][1].setPos(x, top - inset_y)
+
+        y = float(self.crosshair_horizontal.value())
+        horizontal_visible = bottom <= y <= top and left <= right
+        for handle in self._locator_handles[1]:
+            handle.setVisible(horizontal_visible)
+        if horizontal_visible:
+            self._locator_handles[1][0].setPos(left + inset_x, y)
+            self._locator_handles[1][1].setPos(right - inset_x, y)
+
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
 
@@ -355,6 +498,7 @@ class SliceView(pg.PlotWidget):
         threshold: np.ndarray | None = None,
     ) -> None:
         self.spacing = spacing
+        self._axis_lengths = (image.shape[0], image.shape[1])
         self.footprint.set_spacing(spacing, spacing)
         height, width = image.shape[1], image.shape[0]
         rect = QRectF(
@@ -390,6 +534,7 @@ class SliceView(pg.PlotWidget):
         if cursor is not None:
             self.crosshair_vertical.setValue(cursor[0] * spacing[0])
             self.crosshair_horizontal.setValue(cursor[1] * spacing[1])
+        self._update_locator_handles()
 
     def set_mask_overlay(
         self,

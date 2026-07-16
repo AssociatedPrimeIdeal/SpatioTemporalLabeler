@@ -2,11 +2,12 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 
+import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
 from spatiotemporal_labeler.ui.icons import tool_icon
-from spatiotemporal_labeler.ui.slice_view import EditableImageItem
+from spatiotemporal_labeler.ui.slice_view import EditableImageItem, SliceView
 
 
 class ClickEvent:
@@ -72,6 +73,24 @@ class DragEvent:
 
     def lastPos(self):
         return QPointF(5.0, 7.0)
+
+    def accept(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.accepted = False
+
+
+class LocatorDragEvent:
+    def __init__(self, scene_position):
+        self._scene_position = scene_position
+        self.accepted = False
+
+    def button(self):
+        return Qt.MouseButton.LeftButton
+
+    def scenePos(self):
+        return self._scene_position
 
     def accept(self):
         self.accepted = True
@@ -198,3 +217,32 @@ def test_shift_left_drag_still_requests_pan():
     assert event.accepted
     assert pans == [(3.0, 4.0)]
     assert adjustments == []
+
+
+def test_spatial_locator_handles_emit_clipped_axis_indices():
+    ensure_application()
+    view = SliceView("X-Z")
+    view.set_slice(
+        np.zeros((8, 6), dtype=np.float32),
+        None,
+        (2.0, 3.0),
+        (0.0, 1.0),
+        "Y",
+        0,
+        cursor=(2, 3),
+    )
+    requested = []
+    view.locatorDragged.connect(lambda axis, index: requested.append((axis, index)))
+
+    scene_position = view.getViewBox().mapViewToScene(QPointF(9.2, 0.0))
+    event = LocatorDragEvent(scene_position)
+    view._locator_handles[0][0].mouseDragEvent(event)
+    view._locator_dragged(1, 100.0)
+
+    assert event.accepted
+    assert requested == [("X", 5), ("Z", 5)]
+    assert all(handle.isVisible() for pair in view._locator_handles for handle in pair)
+    assert not view.crosshair_vertical.movable
+    assert not view.crosshair_horizontal.movable
+    view.close()
+    view.deleteLater()

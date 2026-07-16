@@ -468,8 +468,60 @@ def test_3d_viewer_uses_non_inertial_trackball_interaction():
 
     assert style.GetClassName() == "vtkInteractorStyleTrackballCamera"
     assert style.GetUseTimers() == 0
+    assert viewer.cursor_renderer.GetInteractive() == 0
+    assert style.HasObserver("InteractionEvent")
     viewer.close()
     viewer.deleteLater()
+
+
+def test_3d_rotation_keeps_visible_surface_inside_the_clipping_range():
+    ensure_application()
+    viewer = Mask3DViewer()
+    frame = np.zeros((20, 24, 28), dtype=np.uint8)
+    frame[2:18, 3:21, 4:25] = 1
+    viewer.set_mask(
+        frame,
+        spacing=(1.5, 2.0, 2.5),
+        labels={1: default_label(1)},
+        immediate=True,
+    )
+    camera = viewer.renderer.GetActiveCamera()
+    camera.Azimuth(137.0)
+    camera.Elevation(41.0)
+    camera.OrthogonalizeViewUp()
+
+    viewer.interaction_style.InvokeEvent("InteractionEvent")
+
+    bounds = viewer.renderer.ComputeVisiblePropBounds()
+    corners = np.asarray(
+        [
+            (x, y, z)
+            for x in bounds[:2]
+            for y in bounds[2:4]
+            for z in bounds[4:6]
+        ]
+    )
+    camera_position = np.asarray(camera.GetPosition())
+    view_direction = np.asarray(camera.GetDirectionOfProjection())
+    depths = (corners - camera_position) @ view_direction
+    near, far = camera.GetClippingRange()
+    assert near < float(np.min(depths))
+    assert far > float(np.max(depths))
+    viewer.close()
+    viewer.deleteLater()
+
+
+def test_locator_drag_updates_the_shared_spatial_cursor():
+    image_data = np.zeros((9, 8, 7, 2), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [1, 2, 3, 0]
+
+    window.slice_views["X-Y"].locatorDragged.emit("X", 6)
+
+    assert window.cursor == [6, 2, 3, 0]
+    finish_window(window, mask)
 
 
 def test_brush_updates_all_2d_overlays_and_defers_3d_until_release():

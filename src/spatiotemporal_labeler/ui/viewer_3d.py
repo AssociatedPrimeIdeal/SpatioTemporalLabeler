@@ -113,8 +113,12 @@ class Mask3DViewer(QWidget):
         self.cursor_renderer.SetLayer(1)
         self.cursor_renderer.SetPreserveColorBuffer(True)
         self.cursor_renderer.SetPreserveDepthBuffer(False)
+        self.cursor_renderer.SetInteractive(False)
         self.cursor_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
         render_window.AddRenderer(self.cursor_renderer)
+        self.interaction_style.AddObserver(
+            "InteractionEvent", self._reset_camera_clipping_range
+        )
 
         self.light_kit = vtkLightKit()
         self.light_kit.SetKeyLightIntensity(0.82)
@@ -254,12 +258,32 @@ class Mask3DViewer(QWidget):
         if visible:
             for pipeline in visible:
                 pipeline.normals.Update()
-            self.renderer.ResetCamera()
-            self.renderer.GetActiveCamera().Zoom(1.30)
+            self._frame_camera()
             self._has_camera = True
         self.vtk_widget.GetRenderWindow().Render()
         self._cursor_timer.stop()
         self._last_cursor_render_time = monotonic()
+
+    def _frame_camera(self) -> None:
+        self.renderer.ResetCamera()
+        self.renderer.GetActiveCamera().Zoom(1.30)
+        self._reset_camera_clipping_range()
+
+    def _reset_camera_clipping_range(self, *_args: Any) -> None:
+        bounds = np.asarray(self.renderer.ComputeVisiblePropBounds(), dtype=float)
+        if bounds.shape != (6,) or not np.all(np.isfinite(bounds)):
+            return
+        lower = bounds[[0, 2, 4]]
+        upper = bounds[[1, 3, 5]]
+        if np.any(upper < lower):
+            return
+        diagonal = float(np.linalg.norm(upper - lower))
+        padding = max(diagonal * 0.05, 1e-3)
+        expanded = (
+            bounds
+            + np.asarray((-padding, padding, -padding, padding, -padding, padding))
+        )
+        self.renderer.ResetCameraClippingRange(tuple(map(float, expanded)))
 
     def _schedule_cursor_render(self) -> None:
         if self._cursor_timer.isActive():
@@ -405,9 +429,10 @@ class Mask3DViewer(QWidget):
         if dimensions_changed or not self._has_camera:
             for definition in definitions:
                 self.segment_pipelines[definition.value].normals.Update()
-            self.renderer.ResetCamera()
-            self.renderer.GetActiveCamera().Zoom(1.30)
+            self._frame_camera()
             self._has_camera = True
+        else:
+            self._reset_camera_clipping_range()
         if self._initialized:
             self.vtk_widget.GetRenderWindow().Render()
             self._cursor_timer.stop()

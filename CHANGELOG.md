@@ -2,6 +2,16 @@
 
 All notable changes to SpatioTemporal Labeler are documented in this file.
 
+## 0.1.6 - 2026-07-17
+
+### Added
+
+- Draggable triangular handles at both visible ends of each spatial locator line for fast linked X/Y/Z slice navigation.
+
+### Fixed
+
+- 3D camera interaction now keeps a padded clipping range around every visible label segment, preventing rotated surfaces from disappearing or exposing clipped interiors.
+
 ## 0.1.5 - 2026-07-16
 
 ### Added

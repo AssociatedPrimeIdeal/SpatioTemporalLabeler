@@ -52,13 +52,13 @@ Each package also contains per-user install and uninstall scripts. No administra
 Every release includes a pure Python wheel and source distribution. Install the current release directly from GitHub:
 
 ```bash
-python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.1.5/spatiotemporal_labeler-0.1.5-py3-none-any.whl"
+python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.1.6/spatiotemporal_labeler-0.1.6-py3-none-any.whl"
 ```
 
 Alternatively, download the wheel from the release and install it locally:
 
 ```bash
-python -m pip install spatiotemporal_labeler-0.1.5-py3-none-any.whl
+python -m pip install spatiotemporal_labeler-0.1.6-py3-none-any.whl
 ```
 
 Launch the installed application with `spatiotemporal-labeler`. Python 3.9 or newer is required. Runtime dependencies are installed automatically by pip.
@@ -92,6 +92,7 @@ spatiotemporal-labeler
 | Ctrl + wheel | Zoom a 2D view |
 | Shift + wheel | Change brush or eraser diameter |
 | Wheel in a spatial view | Change its orthogonal slice |
+| Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
 | `B`, `E`, `L`, `G` | Brush, eraser, contour, or seed grow |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |

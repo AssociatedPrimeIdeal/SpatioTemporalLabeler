@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
             view.navigateRequested.connect(self._navigate_in_plane)
             view.viewDoubleClicked.connect(self._view_double_clicked)
             view.sliceStepRequested.connect(self._step_slice)
+            view.locatorDragged.connect(self._spatial_axis_requested)
             view.brushSizeStepRequested.connect(self._adjust_brush_size)
             view.hoverMoved.connect(self._view_hovered)
             view.windowLevelDragged.connect(self._adjust_window_level)
@@ -1938,6 +1939,17 @@ class MainWindow(QMainWindow):
         self.cursor[fixed_axis] = int(
             np.clip(self.cursor[fixed_axis] + delta, 0, image.data.shape[fixed_axis] - 1)
         )
+        self.refresh_views()
+
+    def _spatial_axis_requested(self, axis_name: str, index: int) -> None:
+        image = self.active_image
+        if image is None or axis_name not in AXIS_NAMES[:3]:
+            return
+        axis = AXIS_NAMES.index(axis_name)
+        target = int(np.clip(index, 0, image.data.shape[axis] - 1))
+        if target == self.cursor[axis]:
+            return
+        self.cursor[axis] = target
         self.refresh_views()
 
     def _temporal_cursor_requested(self, mode: str, axis_index: int, time_index: int) -> None:
