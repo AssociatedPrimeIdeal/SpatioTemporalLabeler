@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 
@@ -12,6 +13,7 @@ from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui import MainWindow
 from spatiotemporal_labeler.ui.label_panel import THRESHOLD_MASK_ITEM
 from spatiotemporal_labeler.ui.viewer_3d import Mask3DViewer
+from spatiotemporal_labeler.ui import viewer_3d as viewer_3d_module
 
 
 def ensure_application():
@@ -532,6 +534,30 @@ def test_time_navigation_queues_all_visible_labels():
     finish_window(window, mask)
 
 
+def test_3d_rendering_toggle_defaults_on_and_stops_surface_requests():
+    image_data = np.zeros((5, 5, 2, 2), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    refreshes = []
+    window._refresh_3d = lambda *args, **kwargs: refreshes.append((args, kwargs))
+
+    assert window.render_toggle.isChecked()
+    assert window.viewer_3d.rendering_enabled
+
+    window.render_toggle.setChecked(False)
+    assert not window.viewer_3d.rendering_enabled
+    assert refreshes == []
+
+    window.render_toggle.setChecked(True)
+    assert window.viewer_3d.rendering_enabled
+    assert len(refreshes) == 1
+
+    window._set_language("zh_CN")
+    assert window.render_toggle.text() == "显示"
+    finish_window(window, mask)
+
+
 def test_double_click_maximizes_across_the_full_two_by_two_panel():
     ensure_application()
     image_data = np.zeros((7, 7, 2, 1), dtype=np.float32)
@@ -577,6 +603,71 @@ def test_3d_viewer_builds_one_binary_surface_actor_per_label():
     assert first.mapper.GetScalarVisibility() == 0
     assert first.decimator.GetTargetReduction() > 0.0
     assert np.isclose(first.actor.GetProperty().GetOpacity(), 0.2)
+    viewer.close()
+    viewer.deleteLater()
+
+
+def test_3d_viewer_rebuilds_only_dirty_labels(monkeypatch):
+    ensure_application()
+    viewer = Mask3DViewer()
+    frame = np.zeros((8, 8, 8), dtype=np.uint8)
+    frame[1:4, 1:4, 1:4] = 1
+    frame[5:7, 5:7, 5:7] = 2
+    labels = {1: default_label(1), 2: default_label(2)}
+    requested = []
+    build_meshes = viewer_3d_module._build_surface_meshes
+
+    def record_request(state, values, settings):
+        requested.append(set(values))
+        return build_meshes(state, values, settings)
+
+    monkeypatch.setattr(viewer_3d_module, "_build_surface_meshes", record_request)
+    viewer.set_mask(frame, labels=labels, immediate=True, cache_key=("mask", 0))
+    frame[2, 2, 2] = 0
+    viewer.set_mask(
+        frame,
+        labels=labels,
+        immediate=True,
+        dirty_values={1},
+        cache_key=("mask", 0),
+    )
+
+    assert requested == [{1, 2}, {1}]
+    assert viewer.segment_pipelines[2].actor.GetVisibility()
+    viewer.close()
+    viewer.deleteLater()
+
+
+def test_3d_viewer_discards_stale_background_results(monkeypatch):
+    application = ensure_application()
+    viewer = Mask3DViewer()
+    frame = np.zeros((6, 6, 6), dtype=np.uint8)
+    frame[1:5, 1:5, 1:5] = 1
+    labels = {1: default_label(1)}
+    build_meshes = viewer_3d_module._build_surface_meshes
+
+    def delayed_build(state, values, settings):
+        if state.cache_key == ("mask", 0):
+            time.sleep(0.04)
+        return build_meshes(state, values, settings)
+
+    monkeypatch.setattr(viewer_3d_module, "_build_surface_meshes", delayed_build)
+    viewer.set_mask(frame, labels=labels, cache_key=("mask", 0))
+    viewer._timer.stop()
+    viewer._apply_pending()
+    viewer.set_mask(frame, labels=labels, cache_key=("mask", 1))
+
+    deadline = time.monotonic() + 2.0
+    while (
+        viewer._active_request is not None or viewer._pending is not None
+    ) and time.monotonic() < deadline:
+        application.processEvents()
+        time.sleep(0.005)
+    application.processEvents()
+
+    assert viewer._active_request is None
+    assert viewer._pending is None
+    assert viewer._rendered_cache_key == ("mask", 1)
     viewer.close()
     viewer.deleteLater()
 
@@ -740,6 +831,7 @@ def test_brush_updates_all_2d_overlays_and_defers_3d_until_release():
     assert overlay_refreshes["X-Z"][-1][8, 0] == 1
     assert overlay_refreshes["Y-Z"][-1][8, 0] == 1
     assert overlay_refreshes["X-T"][-1][8, 0] == 1
+    assert window._stroke_bounds == (slice(1, 12), slice(1, 12), slice(0, 1))
     assert full_refreshes == []
     assert surface_refreshes == []
 
@@ -748,6 +840,6 @@ def test_brush_updates_all_2d_overlays_and_defers_3d_until_release():
     assert {plane: len(refreshes) for plane, refreshes in overlay_refreshes.items()} == {
         plane: 3 for plane in overlay_refreshes
     }
-    assert len(full_refreshes) == 1
+    assert full_refreshes == []
     assert len(surface_refreshes) == 1
     finish_window(window, mask)

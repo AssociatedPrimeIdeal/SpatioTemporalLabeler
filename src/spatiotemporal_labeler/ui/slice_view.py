@@ -22,7 +22,7 @@ pg.setConfigOption("imageAxisOrder", "row-major")
 PLANE_DIRECTIONS = {
     "X-Y": ("L - R", "P - A"),
     "X-Z": ("L - R", "F - H"),
-    "Y-Z": ("P - A", "F - H"),
+    "Y-Z": ("A - P", "F - H"),
 }
 TEMPORAL_DIRECTIONS = {"X-T": "L - R", "Y-T": "P - A", "Z-T": "F - H"}
 AXIS_COLORS = {"X": "#ff5f5f", "Y": "#58d178", "Z": "#579dff", "T": "#f1cc4b"}
@@ -469,6 +469,7 @@ class SliceView(pg.PlotWidget):
         bottom, left = PLANE_DIRECTIONS[plane]
         self.getPlotItem().setLabel("bottom", bottom, color="#8ea4a8")
         self.getPlotItem().setLabel("left", left, color="#8ea4a8")
+        self.getViewBox().invertX(plane == "Y-Z")
         self.getViewBox().invertY(False)
         self.image_item.strokeStarted.connect(self._stroke_started)
         self.image_item.strokeMoved.connect(self._stroke_moved)

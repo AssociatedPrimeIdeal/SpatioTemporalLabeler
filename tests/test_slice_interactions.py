@@ -277,3 +277,14 @@ def test_spatial_locator_handles_emit_clipped_axis_indices():
     assert not view.crosshair_horizontal.movable
     view.close()
     view.deleteLater()
+
+
+def test_yz_view_runs_from_anterior_to_posterior():
+    ensure_application()
+    view = SliceView("Y-Z")
+
+    assert view.getAxis("bottom").labelText == "A - P"
+    assert view.getViewBox().state["xInverted"]
+
+    view.close()
+    view.deleteLater()

@@ -29,6 +29,7 @@ class ThumbnailPlot(pg.PlotWidget):
     def __init__(self, index: int, parent: Any = None) -> None:
         super().__init__(parent=parent, background="#101719")
         self.index = index
+        self._geometry_signature: tuple[int, int, str] | None = None
         self.item = pg.ImageItem()
         self.addItem(self.item)
         self.hideAxis("left")
@@ -40,10 +41,31 @@ class ThumbnailPlot(pg.PlotWidget):
         self.setFixedHeight(110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def set_image(self, image: np.ndarray, levels: tuple[float, float]) -> None:
+    def set_image(
+        self,
+        image: np.ndarray,
+        levels: tuple[float, float],
+        plane: str,
+    ) -> None:
         self.item.setImage(np.asarray(image).T, autoLevels=False, levels=levels)
-        self.autoRange(padding=0.02)
-        self.getViewBox().setAspectLocked(True)
+        invert_x = plane == "Y-Z"
+        signature = (*image.shape, plane)
+        view_box = self.getViewBox()
+        view_box.invertX(invert_x)
+        view_box.setAspectLocked(True)
+        if signature != self._geometry_signature:
+            self._geometry_signature = signature
+            self.autoRange(padding=0.02)
+
+    def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+            return
+        factor = 0.82 if event.angleDelta().y() > 0 else 1.0 / 0.82
+        scene_position = self.mapToScene(event.position().toPoint())
+        center = self.getViewBox().mapSceneToView(scene_position)
+        self.getViewBox().scaleBy((factor, factor), center=center)
+        event.accept()
 
     def mousePressEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
@@ -190,7 +212,7 @@ class ImagePreviewStrip(QFrame):
                 levels = (float(low), float(high if high != low else low + 1.0))
             else:
                 levels = (0.0, 1.0)
-            plot.set_image(image, levels)
+            plot.set_image(image, levels, self.plane)
 
     @staticmethod
     def _extract_preview(

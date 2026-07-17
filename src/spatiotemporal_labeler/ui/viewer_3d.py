@@ -5,7 +5,17 @@ from time import monotonic
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRunnable,
+    QThreadPool,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from skimage.draw import polygon as rasterize_polygon
@@ -86,11 +96,157 @@ class SegmentPipeline:
     actor: Any
 
 
+@dataclass(frozen=True)
+class SurfaceState:
+    frame: np.ndarray
+    spacing: tuple[float, float, float]
+    origin: tuple[float, float, float]
+    direction: np.ndarray
+    cache_key: object
+
+
+@dataclass(frozen=True)
+class SurfaceRequest:
+    generation: int
+    state: SurfaceState
+    values: frozenset[int]
+    settings: RenderSettings
+
+
+def _label_surface(
+    frame: np.ndarray,
+    value: int,
+    spacing: tuple[float, float, float],
+    origin: tuple[float, float, float],
+    direction: np.ndarray,
+    settings: RenderSettings,
+) -> vtkPolyData:
+    selected = np.asarray(frame) == int(value)
+    occupied = [
+        np.flatnonzero(np.any(selected, axis=tuple(other for other in range(3) if other != axis)))
+        for axis in range(3)
+    ]
+    if any(not indices.size for indices in occupied):
+        return vtkPolyData()
+    lower = np.asarray([indices[0] for indices in occupied], dtype=np.intp)
+    upper = np.asarray([indices[-1] + 1 for indices in occupied], dtype=np.intp)
+    crop_slices = tuple(slice(int(start), int(stop)) for start, stop in zip(lower, upper))
+    binary = np.asarray(selected[crop_slices], dtype=np.uint8)
+
+    image = vtkImageData()
+    image.SetDimensions(*binary.shape)
+    image.SetSpacing(*spacing)
+    spacing_array = np.asarray(spacing, dtype=float)
+    direction_array = np.asarray(direction, dtype=float)
+    crop_origin = np.asarray(origin, dtype=float) + direction_array @ (lower * spacing_array)
+    image.SetOrigin(*crop_origin)
+    matrix = image.GetDirectionMatrix()
+    for row in range(3):
+        for column in range(3):
+            matrix.SetElement(row, column, float(direction_array[row, column]))
+    scalars = numpy_to_vtk(binary.ravel(order="F"), deep=True)
+    image.GetPointData().SetScalars(scalars)
+
+    pad = vtkImageConstantPad()
+    pad.SetInputData(image)
+    pad.SetConstant(0)
+    pad.SetOutputWholeExtent(
+        -1,
+        binary.shape[0],
+        -1,
+        binary.shape[1],
+        -1,
+        binary.shape[2],
+    )
+    surface = vtkFlyingEdges3D()
+    surface.SetInputConnection(pad.GetOutputPort())
+    surface.SetValue(0, 0.5)
+    surface.ComputeNormalsOff()
+    surface.ComputeGradientsOff()
+
+    geometry_output = surface.GetOutputPort()
+    if settings.smoothing > 0:
+        smoother = vtkWindowedSincPolyDataFilter()
+        smoother.SetInputConnection(geometry_output)
+        smoother.SetNumberOfIterations(settings.smoothing)
+        smoother.SetPassBand(0.10)
+        smoother.BoundarySmoothingOff()
+        smoother.FeatureEdgeSmoothingOff()
+        smoother.NonManifoldSmoothingOn()
+        smoother.NormalizeCoordinatesOn()
+        geometry_output = smoother.GetOutputPort()
+
+    decimator = vtkDecimatePro()
+    decimator.SetInputConnection(geometry_output)
+    decimator.SetTargetReduction(DETAIL_REDUCTION[settings.detail])
+    decimator.PreserveTopologyOn()
+    decimator.SplittingOff()
+    normals = vtkPolyDataNormals()
+    normals.SetInputConnection(decimator.GetOutputPort())
+    normals.SetFeatureAngle(80)
+    normals.SplittingOff()
+    normals.ConsistencyOn()
+    normals.AutoOrientNormalsOn()
+    normals.Update()
+    output = vtkPolyData()
+    output.DeepCopy(normals.GetOutput())
+    return output
+
+
+def _build_surface_meshes(
+    state: SurfaceState,
+    values: frozenset[int],
+    settings: RenderSettings,
+) -> dict[int, vtkPolyData]:
+    return {
+        value: _label_surface(
+            state.frame,
+            value,
+            state.spacing,
+            state.origin,
+            state.direction,
+            settings,
+        )
+        for value in sorted(values)
+    }
+
+
+class SurfaceTaskSignals(QObject):
+    finished = Signal(int, object, float)
+    failed = Signal(int, str)
+
+
+class SurfaceTask(QRunnable):
+    def __init__(self, request: SurfaceRequest) -> None:
+        super().__init__()
+        self.request = request
+        self.signals = SurfaceTaskSignals()
+
+    @Slot()
+    def run(self) -> None:
+        started = monotonic()
+        try:
+            meshes = _build_surface_meshes(
+                self.request.state,
+                self.request.values,
+                self.request.settings,
+            )
+        except Exception as error:
+            self.signals.failed.emit(self.request.generation, str(error))
+            return
+        self.signals.finished.emit(
+            self.request.generation,
+            meshes,
+            (monotonic() - started) * 1000.0,
+        )
+
+
 class Mask3DViewer(QWidget):
     """Smoothed multilabel rendering with a persistent spatial-cursor marker."""
 
     lassoStarted = Signal()
     lassoFinished = Signal(object)
+    renderFailed = Signal(str)
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
@@ -99,6 +255,7 @@ class Mask3DViewer(QWidget):
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         layout.addWidget(self.vtk_widget)
         self.vtk_widget.installEventFilter(self)
+        self._lasso_requested = False
         self._lasso_enabled = False
         self._lasso_active = False
         self._alt_rotate_active = False
@@ -145,6 +302,16 @@ class Mask3DViewer(QWidget):
 
         self.segment_pipelines: dict[int, SegmentPipeline] = {}
         self.render_settings = RenderSettings()
+        self._rendering_enabled = True
+        self._display_definitions: dict[int, LabelDefinition] = {}
+        self._global_opacity = 1.0
+        self._surface_state: SurfaceState | None = None
+        self._rendered_cache_key: object | None = None
+        self._surface_generation = 0
+        self._active_request: SurfaceRequest | None = None
+        self._tasks: dict[int, SurfaceTask] = {}
+        self._thread_pool = QThreadPool(self)
+        self._thread_pool.setMaxThreadCount(1)
         self._apply_scene_settings()
 
         self.cursor_source = vtkSphereSource()
@@ -182,14 +349,7 @@ class Mask3DViewer(QWidget):
         self.orientation.SetInteractor(render_window.GetInteractor())
         self.orientation.SetViewport(0.0, 0.0, 0.20, 0.20)
 
-        self._pending: tuple[
-            np.ndarray,
-            tuple[float, ...],
-            tuple[float, ...],
-            np.ndarray,
-            tuple[LabelDefinition, ...],
-            float,
-        ] | None = None
+        self._pending: SurfaceRequest | None = None
         self._has_camera = False
         self._initialized = False
         self._cursor_state: tuple[float, float, float, float] | None = None
@@ -323,11 +483,14 @@ class Mask3DViewer(QWidget):
             self.vtk_widget.GetRenderWindow().Render()
 
     def set_lasso_enabled(self, enabled: bool) -> None:
-        self._lasso_enabled = bool(enabled)
+        self._lasso_requested = bool(enabled)
+        self._lasso_enabled = self._lasso_requested and self._rendering_enabled
         self.vtk_widget.setCursor(
-            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+            Qt.CursorShape.CrossCursor
+            if self._lasso_enabled
+            else Qt.CursorShape.ArrowCursor
         )
-        if not enabled:
+        if not self._lasso_enabled:
             self.clear_lasso()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
@@ -520,7 +683,13 @@ class Mask3DViewer(QWidget):
             if geometry_changed:
                 pipeline.smoother.Modified()
                 pipeline.decimator.Modified()
-        if self._initialized and render:
+        if geometry_changed and self._surface_state is not None and self._rendering_enabled:
+            self._queue_surface_request(
+                self._surface_state,
+                self._visible_values(),
+                immediate=False,
+            )
+        elif self._initialized and render and self._rendering_enabled:
             self.vtk_widget.GetRenderWindow().Render()
             self._last_cursor_render_time = monotonic()
 
@@ -553,6 +722,33 @@ class Mask3DViewer(QWidget):
         material.SetSpecular(preset["specular"])
         material.SetSpecularPower(preset["specular_power"])
 
+    def _visible_values(self) -> frozenset[int]:
+        return frozenset(
+            value
+            for value, definition in self._display_definitions.items()
+            if value > 0 and definition.visible
+        )
+
+    def _apply_actor_styles(self) -> None:
+        visible_values = self._visible_values() if self._rendering_enabled else frozenset()
+        preset = STYLE_PRESETS[self.render_settings.style]
+        for value, pipeline in self.segment_pipelines.items():
+            definition = self._display_definitions.get(value)
+            pipeline.actor.SetVisibility(definition is not None and value in visible_values)
+            if definition is None:
+                continue
+            red, green, blue = (channel / 255.0 for channel in definition.color)
+            material = pipeline.actor.GetProperty()
+            material.SetColor(red, green, blue)
+            material.SetOpacity(
+                float(np.clip(definition.opacity * self._global_opacity, 0.0, 1.0))
+            )
+            material.SetInterpolationToPhong()
+            material.SetAmbient(preset["ambient"])
+            material.SetDiffuse(preset["diffuse"])
+            material.SetSpecular(preset["specular"])
+            material.SetSpecularPower(preset["specular_power"])
+
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
         if not self._initialized:
@@ -568,12 +764,11 @@ class Mask3DViewer(QWidget):
             for pipeline in self.segment_pipelines.values()
             if pipeline.actor.GetVisibility()
         ]
-        if visible:
-            for pipeline in visible:
-                pipeline.normals.Update()
+        if visible and not self._has_camera:
             self._frame_camera()
             self._has_camera = True
-        self.vtk_widget.GetRenderWindow().Render()
+        if self._rendering_enabled:
+            self.vtk_widget.GetRenderWindow().Render()
         self._cursor_timer.stop()
         self._last_cursor_render_time = monotonic()
 
@@ -599,7 +794,7 @@ class Mask3DViewer(QWidget):
         self.renderer.ResetCameraClippingRange(tuple(map(float, expanded)))
 
     def _schedule_cursor_render(self) -> None:
-        if self._cursor_timer.isActive():
+        if not self._rendering_enabled or self._cursor_timer.isActive():
             return
         elapsed_ms = (monotonic() - self._last_cursor_render_time) * 1000.0
         delay = 0 if self._last_cursor_render_time == 0.0 else max(
@@ -608,10 +803,41 @@ class Mask3DViewer(QWidget):
         self._cursor_timer.start(delay)
 
     def _render_cursor(self) -> None:
-        if not self._initialized:
+        if not self._initialized or not self._rendering_enabled:
             return
         self.vtk_widget.GetRenderWindow().Render()
         self._last_cursor_render_time = monotonic()
+
+    @property
+    def rendering_enabled(self) -> bool:
+        return self._rendering_enabled
+
+    def set_rendering_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._rendering_enabled:
+            return
+        self._rendering_enabled = enabled
+        self._surface_generation += 1
+        self._timer.stop()
+        self._pending = None
+        self._rendered_cache_key = None
+        self._lasso_enabled = self._lasso_requested and enabled
+        self.vtk_widget.setCursor(
+            Qt.CursorShape.CrossCursor
+            if self._lasso_enabled
+            else Qt.CursorShape.ArrowCursor
+        )
+        if not enabled:
+            self.clear_lasso()
+            for pipeline in self.segment_pipelines.values():
+                pipeline.actor.SetVisibility(False)
+                pipeline.mapper.SetInputData(vtkPolyData())
+            self.cursor_actor.SetVisibility(False)
+        else:
+            self.cursor_actor.SetVisibility(self._cursor_state is not None)
+        if self._initialized:
+            self.vtk_widget.GetRenderWindow().Render()
+            self._last_cursor_render_time = monotonic()
 
     def set_cursor(
         self,
@@ -642,8 +868,8 @@ class Mask3DViewer(QWidget):
                 self.cursor_source.SetCenter(*world)
                 self.cursor_source.SetRadius(radius)
                 self.cursor_source.Modified()
-            self.cursor_actor.SetVisibility(True)
-        if self._initialized and changed:
+            self.cursor_actor.SetVisibility(self._rendering_enabled)
+        if self._initialized and changed and self._rendering_enabled:
             self._schedule_cursor_render()
 
     def set_mask(
@@ -655,13 +881,19 @@ class Mask3DViewer(QWidget):
         immediate: bool = False,
         labels: dict[int, LabelDefinition] | None = None,
         global_opacity: float = 1.0,
+        dirty_values: set[int] | frozenset[int] | None = None,
+        cache_key: object | None = None,
     ) -> None:
         if frame is None:
+            self._surface_generation += 1
             self._timer.stop()
             self._pending = None
+            self._surface_state = None
+            self._rendered_cache_key = None
+            self._display_definitions.clear()
             for pipeline in self.segment_pipelines.values():
                 pipeline.actor.SetVisibility(False)
-            if self._initialized:
+            if self._initialized and self._rendering_enabled:
                 self.vtk_widget.GetRenderWindow().Render()
                 self._cursor_timer.stop()
                 self._last_cursor_render_time = monotonic()
@@ -672,27 +904,82 @@ class Mask3DViewer(QWidget):
                 for value in np.unique(frame)
                 if int(value) > 0
             }
-        definitions = tuple(
-            definition
-            for definition in labels.values()
-            if definition.value > 0 and definition.visible
+        self._display_definitions = {
+            int(value): LabelDefinition(
+                definition.value,
+                definition.name,
+                tuple(definition.color),
+                definition.visible,
+                definition.opacity,
+            )
+            for value, definition in labels.items()
+            if int(value) > 0
+        }
+        self._global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
+        self._apply_actor_styles()
+        state = SurfaceState(
+            np.asarray(frame).copy() if self._rendering_enabled else np.asarray(frame),
+            tuple(map(float, spacing or (1.0, 1.0, 1.0))),
+            tuple(map(float, origin or (0.0, 0.0, 0.0))),
+            np.asarray(direction if direction is not None else np.eye(3), dtype=float).copy(),
+            cache_key if cache_key is not None else ("array", id(frame)),
         )
-        visible_values = {definition.value for definition in definitions}
-        for value, pipeline in self.segment_pipelines.items():
-            pipeline.actor.SetVisibility(value in visible_values)
-        self._pending = (
-            np.asarray(frame),
-            tuple(spacing or (1.0, 1.0, 1.0)),
-            tuple(origin or (0.0, 0.0, 0.0)),
-            np.asarray(direction if direction is not None else np.eye(3), dtype=float),
-            definitions,
-            float(np.clip(global_opacity, 0.0, 1.0)),
+        self._surface_state = state
+        if not self._rendering_enabled:
+            return
+        visible_values = self._visible_values()
+        requested_values = (
+            visible_values
+            if dirty_values is None or state.cache_key != self._rendered_cache_key
+            else frozenset(int(value) for value in dirty_values if int(value) in visible_values)
         )
+        self._queue_surface_request(state, requested_values, immediate)
+
+    def _queue_surface_request(
+        self,
+        state: SurfaceState,
+        values: frozenset[int],
+        immediate: bool,
+    ) -> None:
+        if not self._rendering_enabled:
+            return
+        combined_values = set(values)
+        for outstanding in (self._active_request, self._pending):
+            if outstanding is not None and outstanding.state.cache_key == state.cache_key:
+                combined_values.update(outstanding.values)
+        combined_values.intersection_update(self._visible_values())
+        self._surface_generation += 1
+        request = SurfaceRequest(
+            self._surface_generation,
+            state,
+            frozenset(combined_values),
+            self.render_settings,
+        )
+        self._pending = request
+        if not request.values:
+            self._pending = None
+            self._rendered_cache_key = state.cache_key
+            self._apply_actor_styles()
+            if self._initialized:
+                self.vtk_widget.GetRenderWindow().Render()
+            return
         if immediate:
             self._timer.stop()
-            self._apply_pending()
+            self._pending = None
+            started = monotonic()
+            try:
+                meshes = _build_surface_meshes(state, request.values, request.settings)
+            except Exception as error:
+                self.renderFailed.emit(str(error))
+                return
+            self._apply_surface_result(
+                request,
+                meshes,
+                (monotonic() - started) * 1000.0,
+            )
             return
-
+        if self._active_request is not None:
+            return
         elapsed_ms = (monotonic() - self._last_apply_time) * 1000.0
         if not self._timer.isActive():
             cooldown_ms = max(
@@ -704,49 +991,77 @@ class Mask3DViewer(QWidget):
             self._timer.start(delay)
 
     def _apply_pending(self) -> None:
-        if self._pending is None:
+        if (
+            self._pending is None
+            or self._active_request is not None
+            or not self._rendering_enabled
+        ):
+            return
+        request = self._pending
+        self._pending = None
+        task = SurfaceTask(request)
+        task.signals.finished.connect(self._surface_task_finished)
+        task.signals.failed.connect(self._surface_task_failed)
+        self._active_request = request
+        self._tasks[request.generation] = task
+        self._thread_pool.start(task)
+
+    @Slot(int, object, float)
+    def _surface_task_finished(
+        self,
+        generation: int,
+        meshes: object,
+        worker_duration_ms: float,
+    ) -> None:
+        task = self._tasks.pop(generation, None)
+        request = task.request if task is not None else None
+        if self._active_request is not None and self._active_request.generation == generation:
+            self._active_request = None
+        if (
+            request is not None
+            and generation == self._surface_generation
+            and self._rendering_enabled
+            and isinstance(meshes, dict)
+        ):
+            self._apply_surface_result(request, meshes, worker_duration_ms)
+        if self._pending is not None and self._rendering_enabled:
+            self._timer.start(0)
+
+    @Slot(int, str)
+    def _surface_task_failed(self, generation: int, message: str) -> None:
+        self._tasks.pop(generation, None)
+        if self._active_request is not None and self._active_request.generation == generation:
+            self._active_request = None
+        if generation == self._surface_generation:
+            self.renderFailed.emit(message)
+        if self._pending is not None and self._rendering_enabled:
+            self._timer.start(0)
+
+    def _apply_surface_result(
+        self,
+        request: SurfaceRequest,
+        meshes: dict[int, vtkPolyData],
+        worker_duration_ms: float,
+    ) -> None:
+        if request.generation != self._surface_generation or not self._rendering_enabled:
             return
         started = monotonic()
-        frame, spacing, origin, direction, definitions, global_opacity = self._pending
-        self._pending = None
-        dimensions_changed = tuple(self.image.GetDimensions()) != tuple(frame.shape)
-        self.image.SetDimensions(*frame.shape)
-        self.image.SetSpacing(*spacing)
-        self.image.SetOrigin(*origin)
-        matrix = self.image.GetDirectionMatrix()
-        for row in range(3):
-            for column in range(3):
-                matrix.SetElement(row, column, float(direction[row, column]))
-        frame_int = np.asarray(frame, dtype=np.int32)
-        scalars = numpy_to_vtk(frame_int.ravel(order="F"), deep=True, array_type=VTK_INT)
-        self.image.GetPointData().SetScalars(scalars)
-        self.image.Modified()
-
-        visible_values = {definition.value for definition in definitions}
-        for definition in definitions:
+        for value, mesh in meshes.items():
+            definition = self._display_definitions.get(value)
+            if definition is None:
+                continue
             pipeline = self._segment_pipeline(definition)
-            red, green, blue = (channel / 255.0 for channel in definition.color)
-            pipeline.actor.GetProperty().SetColor(red, green, blue)
-            pipeline.actor.GetProperty().SetOpacity(
-                float(np.clip(definition.opacity * global_opacity, 0.0, 1.0))
-            )
-            pipeline.actor.SetVisibility(True)
-            pipeline.threshold.Modified()
-            pipeline.pad.SetOutputWholeExtent(
-                -1,
-                frame.shape[0],
-                -1,
-                frame.shape[1],
-                -1,
-                frame.shape[2],
-            )
-            pipeline.pad.Modified()
-        for value, pipeline in self.segment_pipelines.items():
-            if value not in visible_values:
-                pipeline.actor.SetVisibility(False)
-        if dimensions_changed or not self._has_camera:
-            for definition in definitions:
-                self.segment_pipelines[definition.value].normals.Update()
+            pipeline.mapper.SetInputData(mesh)
+            pipeline.mapper.Modified()
+        self._apply_actor_styles()
+        visible = [
+            pipeline
+            for pipeline in self.segment_pipelines.values()
+            if pipeline.actor.GetVisibility()
+        ]
+        if visible and (
+            not self._has_camera or request.state.cache_key != self._rendered_cache_key
+        ):
             self._frame_camera()
             self._has_camera = True
         else:
@@ -756,7 +1071,8 @@ class Mask3DViewer(QWidget):
             self._cursor_timer.stop()
             self._last_cursor_render_time = monotonic()
         completed = monotonic()
-        self._last_apply_duration_ms = (completed - started) * 1000.0
+        self._rendered_cache_key = request.state.cache_key
+        self._last_apply_duration_ms = worker_duration_ms + (completed - started) * 1000.0
         self._last_apply_time = completed
 
     def set_label_opacities(
@@ -764,15 +1080,20 @@ class Mask3DViewer(QWidget):
         labels: dict[int, LabelDefinition],
         global_opacity: float,
     ) -> None:
-        global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
-        for value, pipeline in self.segment_pipelines.items():
-            definition = labels.get(value)
-            if definition is None:
-                continue
-            pipeline.actor.GetProperty().SetOpacity(
-                float(np.clip(definition.opacity * global_opacity, 0.0, 1.0))
+        self._display_definitions = {
+            int(value): LabelDefinition(
+                definition.value,
+                definition.name,
+                tuple(definition.color),
+                definition.visible,
+                definition.opacity,
             )
-        if self._initialized:
+            for value, definition in labels.items()
+            if int(value) > 0
+        }
+        self._global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
+        self._apply_actor_styles()
+        if self._initialized and self._rendering_enabled:
             self.vtk_widget.GetRenderWindow().Render()
 
     def _segment_pipeline(self, definition: LabelDefinition) -> SegmentPipeline:

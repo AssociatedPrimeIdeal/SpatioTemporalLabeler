@@ -45,8 +45,10 @@ from spatiotemporal_labeler.model import (
     EditCommand,
     LabelDefinition,
     build_edit_command,
+    capture_frames,
     default_label,
     labels_from_sequence,
+    restore_frames,
     store_labels,
 )
 from spatiotemporal_labeler.tools import (
@@ -150,6 +152,7 @@ class MainWindow(QMainWindow):
         self._stroke_frame = 0
         self._stroke_frames: tuple[int, ...] = ()
         self._stroke_context: tuple[int, ...] = ()
+        self._stroke_bounds: tuple[slice, slice, slice] | None = None
         self._stroke_tool = "brush"
         self._tool_before_grow = "brush"
         self._contour: list[tuple[int, int]] = []
@@ -272,12 +275,24 @@ class MainWindow(QMainWindow):
         render_panel = QWidget()
         render_layout = QVBoxLayout(render_panel)
         render_layout.setContentsMargins(0, 0, 0, 0)
+        render_layout.setSpacing(0)
+        render_header = QWidget()
+        render_header.setObjectName("viewerHeader")
+        render_header_layout = QHBoxLayout(render_header)
+        render_header_layout.setContentsMargins(10, 4, 8, 4)
         self.render_title = QLabel()
         self.render_title.setObjectName("viewerTitle")
-        render_layout.addWidget(self.render_title)
+        render_header_layout.addWidget(self.render_title)
+        render_header_layout.addStretch()
+        self.render_toggle = QCheckBox()
+        self.render_toggle.setChecked(True)
+        self.render_toggle.toggled.connect(self._rendering_toggled)
+        render_header_layout.addWidget(self.render_toggle)
+        render_layout.addWidget(render_header)
         self.viewer_3d = Mask3DViewer()
         self.viewer_3d.lassoStarted.connect(self._lasso_3d_started)
         self.viewer_3d.lassoFinished.connect(self._lasso_3d_finished)
+        self.viewer_3d.renderFailed.connect(self._render_failed)
         render_layout.addWidget(self.viewer_3d, 1)
         splitter.addWidget(render_panel)
         splitter.setStretchFactor(0, 0)
@@ -578,8 +593,12 @@ class MainWindow(QMainWindow):
             }
             QCheckBox { spacing: 7px; font-weight: 600; }
             QCheckBox::indicator { width: 17px; height: 17px; }
-            QLabel#viewerTitle, QLabel#sectionTitle {
+            QLabel#sectionTitle {
                 background: #17282c; color: #e8f0f1; padding: 7px 10px; font-weight: 700;
+            }
+            QWidget#viewerHeader { background: #17282c; }
+            QWidget#viewerHeader QLabel, QWidget#viewerHeader QCheckBox {
+                background: transparent; color: #e8f0f1; font-weight: 700;
             }
             QWidget#labelPanel { background: #f5f8f8; border: 1px solid #bdc9cb; }
             QListWidget { background: #ffffff; border: 1px solid #c1cdcf; outline: 0; }
@@ -615,6 +634,8 @@ class MainWindow(QMainWindow):
         self.mask_source_label.setText(self._tr("edit_mask"))
         self.temporal_header_label.setText(self._tr("temporal_view"))
         self.render_title.setText(self._tr("render_3d"))
+        self.render_toggle.setText(self._tr("render_enabled"))
+        self.render_toggle.setToolTip(self._tr("render_enabled_tip"))
         self.viewer_3d.setToolTip(self._tr("viewer_3d_tip"))
         self.slider_axis_label.setText(self._tr("slider_axis"))
         self.slider_axis.setItemText(0, f"T {self._tr('time')}")
@@ -1274,6 +1295,15 @@ class MainWindow(QMainWindow):
         self.refresh_views()
         self._refresh_3d()
 
+    def _rendering_toggled(self, enabled: bool) -> None:
+        self.viewer_3d.set_rendering_enabled(enabled)
+        self.viewer_3d.set_lasso_enabled(self.tool == "lasso")
+        if enabled:
+            self._refresh_3d()
+
+    def _render_failed(self, message: str) -> None:
+        self.statusBar().showMessage(self._tr("render_failed", message=message), 6000)
+
     def _label_opacity_changed(self, value: int, opacity: float) -> None:
         mask = self.active_mask
         definition = self.active_labels.get(value)
@@ -1354,7 +1384,8 @@ class MainWindow(QMainWindow):
         self.active_label_value = next(iter(self.active_labels), 1)
         self._sync_label_panel()
         self._update_mask_combo_text()
-        self.refresh_views(update_3d=True)
+        self.refresh_views()
+        self._refresh_3d(dirty_values={value})
         self._update_enabled_state()
 
     def _rename_label(self, value: int) -> None:
@@ -1506,11 +1537,15 @@ class MainWindow(QMainWindow):
             direction=image.transform.direction_ras,
         )
         if update_3d:
-            self._refresh_3d(immediate=True)
+            self._refresh_3d()
         if self.image_previews.isVisible() and self._maximized_plane is None:
             self.image_previews.update_images(self.images, tuple(self.cursor))
 
-    def _refresh_3d(self, immediate: bool = False) -> None:
+    def _refresh_3d(
+        self,
+        immediate: bool = False,
+        dirty_values: set[int] | frozenset[int] | None = None,
+    ) -> None:
         mask = self.active_mask
         if mask is None:
             self.viewer_3d.set_mask(None)
@@ -1523,6 +1558,8 @@ class MainWindow(QMainWindow):
             direction=mask.transform.direction_ras,
             immediate=immediate,
             global_opacity=self._global_label_opacity,
+            dirty_values=dirty_values,
+            cache_key=(id(mask), self.cursor[3]),
         )
 
     def _refresh_navigation_3d(self) -> None:
@@ -1538,6 +1575,7 @@ class MainWindow(QMainWindow):
             direction=mask.transform.direction_ras,
             immediate=False,
             global_opacity=self._global_label_opacity,
+            cache_key=(id(mask), self.cursor[3]),
         )
 
     def _refresh_label_overlays(self) -> None:
@@ -1597,6 +1635,7 @@ class MainWindow(QMainWindow):
         self._stroke_ignore_threshold = self._threshold_bypass_held
         self._stroke_frame = self.cursor[3]
         self._stroke_context = self._plane_context(plane)
+        self._stroke_bounds = None
         if plane in TEMPORAL_AXES:
             self._stroke_frames = tuple(range(mask.frame_count))
         else:
@@ -1605,7 +1644,7 @@ class MainWindow(QMainWindow):
                 if self.all_frames_toggle.isChecked() or self._all_frames_held
                 else (self._stroke_frame,)
             )
-        self._stroke_before = mask.data[..., list(self._stroke_frames)].copy()
+        self._stroke_before = capture_frames(mask, self._stroke_frames)
         self._contour = [(h, v)]
         if self._stroke_tool == "contour":
             self._view_for_plane(plane).set_contour(self._contour)
@@ -1658,6 +1697,7 @@ class MainWindow(QMainWindow):
             self._view_for_plane(plane).set_lasso(self._contour)
             self._last_lasso_plane = plane
             changed = self._apply_lasso_to_planes(mask, plane, self._contour)
+            self._refresh_stroke_overlays()
             self._commit_stroke(mask, before)
             self._clear_lasso_overlays()
             self.statusBar().showMessage(
@@ -1717,7 +1757,7 @@ class MainWindow(QMainWindow):
             if self.all_frames_toggle.isChecked() or self._all_frames_held
             else (self.cursor[3],)
         )
-        self._lasso_3d_before = mask.data[..., list(self._lasso_3d_frames)].copy()
+        self._lasso_3d_before = capture_frames(mask, self._lasso_3d_frames)
 
     def _lasso_3d_finished(self, points: object) -> None:
         mask = self._lasso_3d_mask
@@ -1752,7 +1792,7 @@ class MainWindow(QMainWindow):
                     for frame in self._lasso_3d_frames
                 )
         except Exception as error:
-            mask.data[..., list(self._lasso_3d_frames)] = before
+            restore_frames(mask, self._lasso_3d_frames, before)
             self._clear_lasso_3d_state()
             self.viewer_3d.clear_lasso()
             QMessageBox.critical(self, self._tr("lasso_failed"), str(error))
@@ -1774,7 +1814,8 @@ class MainWindow(QMainWindow):
         self.viewer_3d.clear_lasso()
         self._update_mask_combo_text()
         self.refresh_views()
-        self._refresh_3d()
+        if command is not None:
+            self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
         self.statusBar().showMessage(
             self._tr("lasso_applied" if changed else "lasso_no_changes", count=changed),
@@ -1822,13 +1863,15 @@ class MainWindow(QMainWindow):
             original = plane_data.copy() if allowed is not None else None
             for point in points:
                 operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
-                operation(
+                affected = operation(
                     plane_data,
                     point,
                     self.brush_diameter.value() / 2.0,
                     spacing,
                     value,
                 )
+                if affected is not None:
+                    self._include_stroke_bounds(plane, affected)
             if allowed is not None and original is not None:
                 plane_data[~allowed] = original[~allowed]
         if not self._contour or self._contour[-1] != (h, v):
@@ -1849,6 +1892,43 @@ class MainWindow(QMainWindow):
             self._view_for_plane(plane).set_mask_overlay(
                 mask_plane, labels, global_opacity=self._global_label_opacity
             )
+
+    def _include_stroke_bounds(
+        self, plane: str, affected: tuple[slice, slice]
+    ) -> None:
+        horizontal, vertical = affected
+        context = self._stroke_context
+        if plane == "X-Y":
+            bounds = (horizontal, vertical, slice(context[0], context[0] + 1))
+        elif plane == "X-Z":
+            bounds = (horizontal, slice(context[0], context[0] + 1), vertical)
+        elif plane == "Y-Z":
+            bounds = (slice(context[0], context[0] + 1), horizontal, vertical)
+        elif plane == "X-T":
+            bounds = (
+                horizontal,
+                slice(context[0], context[0] + 1),
+                slice(context[1], context[1] + 1),
+            )
+        elif plane == "Y-T":
+            bounds = (
+                slice(context[0], context[0] + 1),
+                horizontal,
+                slice(context[1], context[1] + 1),
+            )
+        else:
+            bounds = (
+                slice(context[0], context[0] + 1),
+                slice(context[1], context[1] + 1),
+                horizontal,
+            )
+        if self._stroke_bounds is None:
+            self._stroke_bounds = bounds
+            return
+        self._stroke_bounds = tuple(
+            slice(min(current.start, update.start), max(current.stop, update.stop))
+            for current, update in zip(self._stroke_bounds, bounds)
+        )
 
     def _confirm_contour(self, plane: str) -> None:
         pending = self._pending_contour
@@ -1897,20 +1977,27 @@ class MainWindow(QMainWindow):
         self._pending_contour = None
         self._update_mask_combo_text()
         self.refresh_views()
-        self._refresh_3d()
+        if command is not None:
+            self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
 
     def _commit_stroke(self, mask: Sequence4D, before: np.ndarray) -> None:
-        command = build_edit_command(mask, self._stroke_frames, before, self._stroke_frame)
+        command = build_edit_command(
+            mask,
+            self._stroke_frames,
+            before,
+            self._stroke_frame,
+            spatial_bounds=self._stroke_bounds,
+        )
         if command is not None:
             mask.dirty = True
             self._undo_stack.append(command)
             self._undo_stack = self._undo_stack[-30:]
             self._redo_stack.clear()
         self._clear_stroke()
-        self._update_mask_combo_text()
-        self.refresh_views()
-        self._refresh_3d()
+        if command is not None:
+            self._update_mask_combo_text()
+            self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
 
     def _clear_stroke(self, keep_contour: bool = False) -> None:
@@ -1918,6 +2005,7 @@ class MainWindow(QMainWindow):
         self._stroke_mask = None
         self._stroke_frames = ()
         self._stroke_context = ()
+        self._stroke_bounds = None
         self._stroke_tool = self.tool
         self._stroke_ignore_threshold = False
         if not keep_contour:
@@ -2062,7 +2150,7 @@ class MainWindow(QMainWindow):
         if threshold is not None and not bool(threshold[x, y, z]):
             self.statusBar().showMessage(self._tr("grow_outside_mask"), 3000)
             return
-        before = mask.data[..., [frame]].copy()
+        before = capture_frames(mask, (frame,))
         tolerance = float(self.grow_panel.tolerance.value())
         seed_value = float(image.data[voxel])
         if not np.isfinite(seed_value):
@@ -2097,7 +2185,8 @@ class MainWindow(QMainWindow):
             self._redo_stack.clear()
         self._update_mask_combo_text()
         self.refresh_views()
-        self._refresh_3d()
+        if command is not None:
+            self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
 
     def _apply_morphology(self) -> None:
@@ -2116,7 +2205,7 @@ class MainWindow(QMainWindow):
             if self.morphology_panel.labels_scope.currentData() == "all"
             else (self.active_label_value,)
         )
-        before = mask.data[..., list(frames)].copy()
+        before = capture_frames(mask, frames)
         operation = str(self.morphology_panel.operation.currentData())
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -2131,7 +2220,7 @@ class MainWindow(QMainWindow):
                     radius_mm=self.morphology_panel.radius.value(),
                 )
         except Exception as error:
-            mask.data[..., list(frames)] = before
+            restore_frames(mask, frames, before)
             QMessageBox.critical(self, self._tr("morphology_failed"), str(error))
             return
         finally:
@@ -2146,7 +2235,8 @@ class MainWindow(QMainWindow):
         self._undo_stack = self._undo_stack[-30:]
         self._redo_stack.clear()
         self._update_mask_combo_text()
-        self.refresh_views(update_3d=True)
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
         self.statusBar().showMessage(
             self._tr("morphology_applied", count=command.flat_indices.size), 5000
@@ -2173,7 +2263,7 @@ class MainWindow(QMainWindow):
             if self.interpolation_panel.labels_scope.currentData() == "all"
             else (self.active_label_value,)
         )
-        before = mask.data[..., list(frames)].copy()
+        before = capture_frames(mask, frames)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             mask.data[..., start + 1 : end] = interpolate_label_frames(
@@ -2184,7 +2274,7 @@ class MainWindow(QMainWindow):
                 spacing_xyz=mask.spacing_xyz,
             )
         except Exception as error:
-            mask.data[..., list(frames)] = before
+            restore_frames(mask, frames, before)
             QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))
             return
         finally:
@@ -2199,7 +2289,8 @@ class MainWindow(QMainWindow):
         self._undo_stack = self._undo_stack[-30:]
         self._redo_stack.clear()
         self._update_mask_combo_text()
-        self.refresh_views(update_3d=True)
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
         self.statusBar().showMessage(
             self._tr("interpolation_applied", count=command.flat_indices.size), 5000
@@ -2248,7 +2339,8 @@ class MainWindow(QMainWindow):
                 self._labels_for(command.mask)[numeric] = default_label(numeric)
         self._sync_label_panel()
         self._update_mask_combo_text()
-        self.refresh_views(update_3d=True)
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
 
     def _navigate_in_plane(self, plane: str, h: int, v: int) -> None:
