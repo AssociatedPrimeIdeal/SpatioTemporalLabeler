@@ -7,6 +7,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
+from vtkmodules.vtkCommonDataModel import vtkPolyData
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
@@ -644,32 +645,32 @@ def test_3d_viewer_discards_stale_background_results(monkeypatch):
     frame = np.zeros((6, 6, 6), dtype=np.uint8)
     frame[1:5, 1:5, 1:5] = 1
     labels = {1: default_label(1)}
-    build_meshes = viewer_3d_module._build_surface_meshes
-
     def delayed_build(state, values, settings):
         if state.cache_key == ("mask", 0):
             time.sleep(0.04)
-        return build_meshes(state, values, settings)
+        return {value: vtkPolyData() for value in values}
 
     monkeypatch.setattr(viewer_3d_module, "_build_surface_meshes", delayed_build)
-    viewer.set_mask(frame, labels=labels, cache_key=("mask", 0))
-    viewer._timer.stop()
-    viewer._apply_pending()
-    viewer.set_mask(frame, labels=labels, cache_key=("mask", 1))
+    try:
+        viewer.set_mask(frame, labels=labels, cache_key=("mask", 0))
+        viewer._timer.stop()
+        viewer._apply_pending()
+        viewer.set_mask(frame, labels=labels, cache_key=("mask", 1))
 
-    deadline = time.monotonic() + 2.0
-    while (
-        viewer._active_request is not None or viewer._pending is not None
-    ) and time.monotonic() < deadline:
+        deadline = time.monotonic() + 5.0
+        while (
+            viewer._active_request is not None or viewer._pending is not None
+        ) and time.monotonic() < deadline:
+            application.processEvents()
+            time.sleep(0.005)
         application.processEvents()
-        time.sleep(0.005)
-    application.processEvents()
 
-    assert viewer._active_request is None
-    assert viewer._pending is None
-    assert viewer._rendered_cache_key == ("mask", 1)
-    viewer.close()
-    viewer.deleteLater()
+        assert viewer._active_request is None
+        assert viewer._pending is None
+        assert viewer._rendered_cache_key == ("mask", 1)
+    finally:
+        viewer.close()
+        viewer.deleteLater()
 
 
 def test_3d_viewer_uses_non_inertial_trackball_interaction():

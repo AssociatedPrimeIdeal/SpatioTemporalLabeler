@@ -2531,6 +2531,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         dirty = [mask for mask in self.masks if mask.dirty]
         if not dirty:
+            self.viewer_3d.close()
             event.accept()
             return
         choice = QMessageBox.warning(
@@ -2550,4 +2551,5 @@ class MainWindow(QMainWindow):
                 if not self._save_specific_mask(mask):
                     event.ignore()
                     return
+        self.viewer_3d.close()
         event.accept()

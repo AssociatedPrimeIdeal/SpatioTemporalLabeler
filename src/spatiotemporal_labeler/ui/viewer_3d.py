@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QMouseEvent, QResizeEvent, QShowEvent
+from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from skimage.draw import polygon as rasterize_polygon
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
@@ -497,6 +497,18 @@ class Mask3DViewer(QWidget):
         super().resizeEvent(event)
         if self._lasso_points:
             QTimer.singleShot(0, lambda: self.set_lasso_points(self._lasso_points))
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        self._surface_generation += 1
+        self._rendering_enabled = False
+        self._timer.stop()
+        self._cursor_timer.stop()
+        self._pending = None
+        self._thread_pool.clear()
+        self._thread_pool.waitForDone()
+        self._active_request = None
+        self._tasks.clear()
+        super().closeEvent(event)
 
     def clear_lasso(self) -> None:
         was_visible = any(
