@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spatiotemporal-labeler"
-version = "0.2.5"
+version = "0.2.6"
 description = "Cross-platform 3D+t medical image segmentation editor"
 readme = "README.md"
 license = "GPL-3.0-only"

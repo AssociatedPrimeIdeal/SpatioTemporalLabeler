@@ -54,13 +54,13 @@ Each package also contains per-user install and uninstall scripts. No administra
 Every release includes a pure Python wheel and source distribution. Install the current release directly from GitHub:
 
 ```bash
-python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.2.5/spatiotemporal_labeler-0.2.5-py3-none-any.whl"
+python -m pip install "https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/download/v0.2.6/spatiotemporal_labeler-0.2.6-py3-none-any.whl"
 ```
 
 Alternatively, download the wheel from the release and install it locally:
 
 ```bash
-python -m pip install spatiotemporal_labeler-0.2.5-py3-none-any.whl
+python -m pip install spatiotemporal_labeler-0.2.6-py3-none-any.whl
 ```
 
 Launch the installed application with `spatiotemporal-labeler`. Python 3.9 or newer is required. Runtime dependencies are installed automatically by pip.
