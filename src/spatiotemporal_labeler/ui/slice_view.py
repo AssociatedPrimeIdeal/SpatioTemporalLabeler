@@ -278,6 +278,7 @@ def threshold_overlay(
 
 
 class EditableImageItem(pg.ImageItem):
+    activated = Signal()
     strokeStarted = Signal(int, int, bool)
     strokeMoved = Signal(int, int, bool)
     strokeFinished = Signal(int, int, bool)
@@ -302,6 +303,8 @@ class EditableImageItem(pg.ImageItem):
         return int(np.floor(position.x())), int(np.floor(position.y()))
 
     def mouseDragEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        if event.isStart():
+            self.activated.emit()
         if event.button() == Qt.MouseButton.MiddleButton:
             if not event.isStart() and not event.isFinish():
                 current = event.scenePos() if hasattr(event, "scenePos") else event.pos()
@@ -339,6 +342,7 @@ class EditableImageItem(pg.ImageItem):
         event.accept()
 
     def mouseClickEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        self.activated.emit()
         h, v = self._voxel(event.pos())
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.navigateRequested.emit(h, v)
@@ -381,6 +385,7 @@ class EditableImageItem(pg.ImageItem):
 
 
 class SliceView(pg.PlotWidget):
+    viewActivated = Signal(str)
     strokeStarted = Signal(str, int, int, bool)
     strokeMoved = Signal(str, int, int, bool)
     strokeFinished = Signal(str, int, int, bool)
@@ -471,6 +476,7 @@ class SliceView(pg.PlotWidget):
         self.getPlotItem().setLabel("left", left, color="#8ea4a8")
         self.getViewBox().invertX(True)
         self.getViewBox().invertY(False)
+        self.image_item.activated.connect(lambda: self.viewActivated.emit(self.plane))
         self.image_item.strokeStarted.connect(self._stroke_started)
         self.image_item.strokeMoved.connect(self._stroke_moved)
         self.image_item.strokeFinished.connect(self._stroke_finished)
@@ -544,6 +550,27 @@ class SliceView(pg.PlotWidget):
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
 
+    def clear_view(self) -> None:
+        for item in (
+            self.image_item,
+            self.threshold_item,
+            self.applied_threshold_item,
+            self.mask_item,
+        ):
+            item.clear()
+        self.set_contour([])
+        self.set_lasso([])
+        self.footprint.show_at(0, 0, False)
+        self.crosshair_vertical.hide()
+        self.crosshair_horizontal.hide()
+        for handles in self._locator_handles:
+            for handle in handles:
+                handle.hide()
+        self._axis_lengths = (0, 0)
+        self._data_rect = None
+        self._geometry_signature = None
+        self.getPlotItem().setTitle(self.plane, color="#dce8e9", size="10pt")
+
     def set_levels(self, levels: tuple[float, float]) -> None:
         self.image_item.setLevels(levels)
 
@@ -609,6 +636,8 @@ class SliceView(pg.PlotWidget):
             self.reset_view()
         self.getViewBox().setAspectLocked(True)
         if cursor is not None:
+            self.crosshair_vertical.show()
+            self.crosshair_horizontal.show()
             self.crosshair_vertical.setValue(cursor[0] * spacing[0])
             self.crosshair_horizontal.setValue(cursor[1] * spacing[1])
         self._update_locator_handles()
@@ -770,6 +799,23 @@ class TemporalView(pg.PlotWidget):
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
 
+    def clear_view(self) -> None:
+        for item in (
+            self.image_item,
+            self.threshold_item,
+            self.applied_threshold_item,
+            self.mask_item,
+        ):
+            item.clear()
+        self.set_contour([])
+        self.set_lasso([])
+        self.footprint.show_at(0, 0, False)
+        self.time_line.hide()
+        self.spatial_line.hide()
+        self._data_rect = None
+        self._geometry_signature = None
+        self.getPlotItem().setTitle(self.mode, color="#dce8e9", size="10pt")
+
     def set_levels(self, levels: tuple[float, float]) -> None:
         self.image_item.setLevels(levels)
 
@@ -821,6 +867,8 @@ class TemporalView(pg.PlotWidget):
             self.set_mask_overlay(mask, labels, rect, global_opacity)
         self.time_line.setValue(time_index)
         if cursor is not None:
+            self.spatial_line.show()
+            self.time_line.show()
             self.spatial_line.setValue(cursor[0] * spacing)
             self.time_line.setValue(cursor[1])
         self.getPlotItem().setTitle(

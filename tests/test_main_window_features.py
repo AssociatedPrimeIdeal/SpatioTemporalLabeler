@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
@@ -259,6 +259,56 @@ def test_picker_shortcut_tracks_hover_without_replacing_brush():
     finish_window(window, mask)
 
 
+def test_enter_confirms_a_pending_contour():
+    image_data = np.ones((7, 7, 1, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.isActiveWindow = lambda: True
+    window._pending_contour = type("Pending", (), {"plane": "X-Y"})()
+    confirmed = []
+    window._confirm_contour = lambda plane: confirmed.append(plane)
+    pressed = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Return,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert window.eventFilter(window, pressed)
+    assert confirmed == ["X-Y"]
+    window._pending_contour = None
+    finish_window(window, mask)
+
+
+def test_up_and_down_step_the_last_clicked_spatial_slice():
+    image_data = np.zeros((9, 8, 7, 2), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.isActiveWindow = lambda: True
+    window.cursor = [4, 3, 2, 1]
+    window.refresh_views = lambda: None
+    up = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Up,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    down = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Down,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    window.slice_views["X-Z"].viewActivated.emit("X-Z")
+    assert window.eventFilter(window, up)
+    assert window.cursor == [4, 4, 2, 1]
+
+    window.slice_views["Y-Z"].viewActivated.emit("Y-Z")
+    assert window.eventFilter(window, down)
+    assert window.cursor == [3, 4, 2, 1]
+    finish_window(window, mask)
+
+
 def test_seed_grow_action_closes_panel_and_restores_previous_tool():
     image_data = np.ones((7, 7, 1, 1), dtype=np.float32)
     window, _image, mask = make_window(
@@ -318,8 +368,102 @@ def test_toolbar_uses_one_import_action_for_images_and_labels():
     )
 
     assert window.import_action in window.file_menu.actions()
+    assert window.close_all_action in window.file_menu.actions()
+    assert window.close_all_action.shortcut().toString() == "Ctrl+W"
     assert not hasattr(window, "open_image_action")
     assert not hasattr(window, "open_mask_action")
+    finish_window(window, mask)
+
+
+def test_close_all_files_clears_the_complete_workspace(monkeypatch):
+    image_data = np.ones((5, 4, 3, 2), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.refresh_views(update_3d=True)
+    mask.dirty = True
+    window._applied_threshold_mask = np.ones(image_data.shape, dtype=bool)
+    window._applied_threshold_image = image
+    window._undo_stack.append(object())
+    window._redo_stack.append(object())
+    window._last_clicked_slice_plane = "X-Z"
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QMessageBox.warning",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Discard,
+    )
+
+    assert window.close_all_files()
+
+    assert window.images == []
+    assert window.masks == []
+    assert window.image_combo.count() == 0
+    assert window.mask_combo.count() == 0
+    assert window._mask_labels == {}
+    assert window._applied_threshold_mask is None
+    assert window._applied_threshold_image is None
+    assert window._undo_stack == []
+    assert window._redo_stack == []
+    assert window.cursor == [0, 0, 0, 0]
+    assert window._last_clicked_slice_plane is None
+    assert not window.close_all_action.isEnabled()
+    assert window.axis_slider.maximum() == 0
+    assert window.label_panel.list_widget.count() == 0
+    assert all(view.image_item.image is None for view in window.slice_views.values())
+    assert window.temporal_view.image_item.image is None
+    assert window.viewer_3d._surface_state is None
+    assert window.viewer_3d._cursor_state is None
+
+    mask.dirty = False
+    window.images.append(image)
+    window.image_combo.addItem("reloaded image")
+    window.masks.append(mask)
+    window._mask_labels[id(mask)] = {1: default_label(1)}
+    window.mask_combo.addItem("reloaded labels")
+    window.refresh_views()
+    assert all(view.image_item.image is not None for view in window.slice_views.values())
+    assert window.temporal_view.image_item.image is not None
+    assert window.close_all_action.isEnabled()
+    finish_window(window, mask)
+
+
+def test_close_all_files_cancel_preserves_unsaved_workspace(monkeypatch):
+    image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    mask.dirty = True
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QMessageBox.warning",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Cancel,
+    )
+
+    assert not window.close_all_files()
+    assert window.images == [image]
+    assert window.masks == [mask]
+    assert window.image_combo.count() == 1
+    assert window.mask_combo.count() == 1
+    mask.dirty = False
+    finish_window(window, mask)
+
+
+def test_close_all_files_saves_dirty_masks_before_reset(monkeypatch):
+    image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    mask.dirty = True
+    saved = []
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QMessageBox.warning",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Save,
+    )
+    window._save_specific_mask = lambda candidate: saved.append(candidate) or True
+
+    assert window.close_all_files()
+    assert saved == [mask]
+    assert window.images == []
+    assert window.masks == []
+    mask.dirty = False
     finish_window(window, mask)
 
 

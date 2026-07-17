@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         self._threshold_bypass_held = False
         self._stroke_ignore_threshold = False
         self._maximized_plane: str | None = None
+        self._last_clicked_slice_plane: str | None = None
         self._mask_labels: dict[int, dict[int, LabelDefinition]] = {}
         self._stroke_before: np.ndarray | None = None
         self._stroke_mask: Sequence4D | None = None
@@ -325,6 +326,7 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(navigation)
 
         for view in self.slice_views.values():
+            view.viewActivated.connect(self._slice_view_activated)
             view.strokeStarted.connect(self._stroke_started)
             view.strokeMoved.connect(self._stroke_moved)
             view.strokeFinished.connect(self._stroke_finished)
@@ -424,6 +426,9 @@ class MainWindow(QMainWindow):
         self.save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.save_as_action.triggered.connect(lambda: self.save_mask(save_as=True))
         self.toolbar.addAction(self.save_as_action)
+        self.close_all_action = QAction("", self)
+        self.close_all_action.setShortcut(QKeySequence("Ctrl+W"))
+        self.close_all_action.triggered.connect(self.close_all_files)
         self.toolbar.addSeparator()
 
         self.undo_action = QAction(
@@ -516,6 +521,8 @@ class MainWindow(QMainWindow):
                 self.save_as_action,
             ]
         )
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(self.close_all_action)
         self.edit_menu = self.menuBar().addMenu("")
         self.edit_menu.addActions([self.undo_action, self.redo_action, *self.tool_actions.values()])
         self.view_menu = self.menuBar().addMenu("")
@@ -645,6 +652,7 @@ class MainWindow(QMainWindow):
         self.new_mask_action.setText(self._tr("new_mask"))
         self.save_action.setText(self._tr("save"))
         self.save_as_action.setText(self._tr("save_as"))
+        self.close_all_action.setText(self._tr("close_all"))
         self.undo_action.setText(self._tr("undo"))
         self.redo_action.setText(self._tr("redo"))
         for name, action in self.tool_actions.items():
@@ -755,6 +763,17 @@ class MainWindow(QMainWindow):
             self._threshold_bypass_held = pressed
             return True
         if pressed and not editing_text:
+            if key_event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                if self._pending_contour is not None:
+                    self._confirm_contour(self._pending_contour.plane)
+                    return True
+            if key_event.modifiers() == Qt.KeyboardModifier.NoModifier:
+                if key_event.key() == Qt.Key.Key_Up:
+                    self._step_preferred_slice(1)
+                    return True
+                if key_event.key() == Qt.Key.Key_Down:
+                    self._step_preferred_slice(-1)
+                    return True
             if self._event_matches(key_event, "previous_time"):
                 self._step_time(-1)
                 return True
@@ -1192,6 +1211,84 @@ class MainWindow(QMainWindow):
             return False
         self._update_mask_combo_text()
         self.statusBar().showMessage(self._tr("saved", path=destination), 5000)
+        return True
+
+    def _confirm_unsaved_masks(self) -> bool:
+        dirty = [mask for mask in self.masks if mask.dirty]
+        if not dirty:
+            return True
+        choice = QMessageBox.warning(
+            self,
+            self._tr("unsaved_title"),
+            self._tr("unsaved_message", count=len(dirty)),
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        if choice == QMessageBox.StandardButton.Save:
+            return all(self._save_specific_mask(mask) for mask in dirty)
+        return True
+
+    def close_all_files(self) -> bool:
+        if not self.images and not self.masks:
+            return True
+        if not self._confirm_unsaved_masks():
+            return False
+
+        self._cancel_pending_contour(silent=True)
+        self._clear_stroke()
+        self._clear_lasso_3d_state()
+        self._clear_lasso_overlays()
+        if self._maximized_plane is not None:
+            self._restore_view_grid_layout()
+
+        self.image_combo.blockSignals(True)
+        self.mask_combo.blockSignals(True)
+        self.image_combo.clear()
+        self.mask_combo.clear()
+        self.image_combo.blockSignals(False)
+        self.mask_combo.blockSignals(False)
+        self.images.clear()
+        self.masks.clear()
+        self._mask_labels.clear()
+
+        self.cursor = [0, 0, 0, 0]
+        self.active_label_value = 1
+        self._levels = (0.0, 1.0)
+        self._image_value_range = (0.0, 1.0)
+        self._applied_threshold_mask = None
+        self._applied_threshold_image = None
+        self._applied_threshold_visible = True
+        self._applied_threshold_opacity = 1.0
+        self._invalidate_threshold()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._last_clicked_slice_plane = None
+        self._maximized_plane = None
+        self._all_frames_held = False
+        self._threshold_bypass_held = False
+        self._set_picker_held(False)
+        self.all_frames_toggle.setChecked(False)
+        self.tool_actions["brush"].setChecked(True)
+        self._set_tool("brush")
+
+        for view in self.slice_views.values():
+            view.clear_view()
+        self.temporal_view.clear_view()
+        self.viewer_3d.set_mask(None)
+        self.viewer_3d.set_cursor(None)
+        self.image_previews.rebuild([], -1)
+        self.image_previews.set_plane("X-Y", emit=False)
+        self.temporal_mode.setCurrentIndex(0)
+        self.slider_axis.setCurrentIndex(0)
+        self._slider_axis_changed()
+        self._sync_label_panel()
+        self._sync_interpolation_panel()
+        self._update_enabled_state()
+        self.statusBar().showMessage(self._tr("load_start"))
         return True
 
     def _active_image_changed(self, _index: int) -> None:
@@ -2352,6 +2449,20 @@ class MainWindow(QMainWindow):
         self._clear_lasso_overlays()
         self.refresh_views()
 
+    def _slice_view_activated(self, plane: str) -> None:
+        if plane in PLANE_AXES:
+            self._last_clicked_slice_plane = plane
+
+    def _step_preferred_slice(self, delta: int) -> None:
+        plane = self._last_clicked_slice_plane
+        if plane not in PLANE_AXES:
+            plane = (
+                self._maximized_plane
+                if self._maximized_plane in PLANE_AXES
+                else "X-Y"
+            )
+        self._step_slice(plane, delta)
+
     def _step_slice(self, plane: str, delta: int) -> None:
         image = self.active_image
         if image is None:
@@ -2508,6 +2619,7 @@ class MainWindow(QMainWindow):
         has_mask = self.active_mask is not None
         has_label = bool(self.active_labels)
         self.new_mask_action.setEnabled(has_image)
+        self.close_all_action.setEnabled(bool(self.images or self.masks))
         self.save_action.setEnabled(has_mask)
         self.save_as_action.setEnabled(has_mask)
         self.undo_action.setEnabled(bool(self._undo_stack))
@@ -2529,27 +2641,8 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_mask and has_label)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
-        dirty = [mask for mask in self.masks if mask.dirty]
-        if not dirty:
-            self.viewer_3d.close()
-            event.accept()
-            return
-        choice = QMessageBox.warning(
-            self,
-            self._tr("unsaved_title"),
-            self._tr("unsaved_message", count=len(dirty)),
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save,
-        )
-        if choice == QMessageBox.StandardButton.Cancel:
+        if not self._confirm_unsaved_masks():
             event.ignore()
             return
-        if choice == QMessageBox.StandardButton.Save:
-            for mask in dirty:
-                if not self._save_specific_mask(mask):
-                    event.ignore()
-                    return
         self.viewer_3d.close()
         event.accept()

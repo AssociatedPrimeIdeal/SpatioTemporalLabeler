@@ -207,8 +207,10 @@ def test_shift_hover_locates_without_a_mouse_button():
 def test_double_click_does_not_emit_a_single_click_stroke():
     ensure_application()
     item = EditableImageItem()
+    activations = []
     strokes = []
     double_clicks = []
+    item.activated.connect(lambda: activations.append(None))
     item.strokeStarted.connect(lambda h, v, erase: strokes.append((h, v, erase)))
     item.doubleClicked.connect(lambda h, v: double_clicks.append((h, v)))
     event = ClickEvent(Qt.MouseButton.LeftButton, double=True)
@@ -216,6 +218,7 @@ def test_double_click_does_not_emit_a_single_click_stroke():
     item.mouseClickEvent(event)
 
     assert event.accepted
+    assert len(activations) == 1
     assert strokes == []
     assert double_clicks == [(4, 7)]
 
