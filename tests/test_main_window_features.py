@@ -1,5 +1,4 @@
 import os
-import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 
@@ -7,7 +6,6 @@ import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
-from vtkmodules.vtkCommonDataModel import vtkPolyData
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
@@ -639,34 +637,27 @@ def test_3d_viewer_rebuilds_only_dirty_labels(monkeypatch):
     viewer.deleteLater()
 
 
-def test_3d_viewer_discards_stale_background_results(monkeypatch):
-    application = ensure_application()
+def test_3d_viewer_discards_stale_background_results():
+    ensure_application()
     viewer = Mask3DViewer()
     frame = np.zeros((6, 6, 6), dtype=np.uint8)
     frame[1:5, 1:5, 1:5] = 1
     labels = {1: default_label(1)}
-    def delayed_build(state, values, settings):
-        if state.cache_key == ("mask", 0):
-            time.sleep(0.04)
-        return {value: vtkPolyData() for value in values}
-
-    monkeypatch.setattr(viewer_3d_module, "_build_surface_meshes", delayed_build)
     try:
         viewer.set_mask(frame, labels=labels, cache_key=("mask", 0))
         viewer._timer.stop()
-        viewer._apply_pending()
+        stale_request = viewer._pending
+        assert stale_request is not None
+
         viewer.set_mask(frame, labels=labels, cache_key=("mask", 1))
+        viewer._timer.stop()
+        current_request = viewer._pending
+        assert current_request is not None
 
-        deadline = time.monotonic() + 5.0
-        while (
-            viewer._active_request is not None or viewer._pending is not None
-        ) and time.monotonic() < deadline:
-            application.processEvents()
-            time.sleep(0.005)
-        application.processEvents()
+        viewer._apply_surface_result(stale_request, {}, 1.0)
+        assert viewer._rendered_cache_key is None
 
-        assert viewer._active_request is None
-        assert viewer._pending is None
+        viewer._apply_surface_result(current_request, {}, 1.0)
         assert viewer._rendered_cache_key == ("mask", 1)
     finally:
         viewer.close()
