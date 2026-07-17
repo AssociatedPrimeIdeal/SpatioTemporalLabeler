@@ -2,6 +2,12 @@
 
 All notable changes to SpatioTemporal Labeler are documented in this file.
 
+## 0.2.2 - 2026-07-17
+
+### Changed
+
+- Update application for 0.2.2
+
 ## 0.2.1 - 2026-07-17
 
 ### Changed

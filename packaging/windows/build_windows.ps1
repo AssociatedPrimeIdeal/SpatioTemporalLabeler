@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $PythonBin = if ($env:PYTHON_BIN) { $env:PYTHON_BIN } else { "python" }
-$Version = if ($env:STL_VERSION) { $env:STL_VERSION } else { "0.2.1" }
+$Version = if ($env:STL_VERSION) { $env:STL_VERSION } else { "0.2.2" }
 $PackageName = "SpatioTemporalLabeler-$Version-windows-x64"
 $ReleaseRoot = Join-Path $ProjectRoot "release"
 $PackageRoot = Join-Path $ReleaseRoot $PackageName
