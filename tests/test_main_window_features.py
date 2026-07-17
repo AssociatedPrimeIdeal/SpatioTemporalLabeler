@@ -678,6 +678,21 @@ def test_3d_viewer_uses_non_inertial_trackball_interaction():
     viewer.deleteLater()
 
 
+def test_3d_viewer_starts_in_coronal_right_to_left_orientation():
+    ensure_application()
+    viewer = Mask3DViewer()
+    camera = viewer.renderer.GetActiveCamera()
+    view_direction = np.asarray(camera.GetDirectionOfProjection())
+    view_up = np.asarray(camera.GetViewUp())
+    screen_right = np.cross(view_direction, view_up)
+
+    assert np.allclose(view_direction, (0.0, -1.0, 0.0))
+    assert np.allclose(view_up, (0.0, 0.0, 1.0))
+    assert np.allclose(screen_right, (-1.0, 0.0, 0.0))
+    viewer.close()
+    viewer.deleteLater()
+
+
 def test_3d_left_drag_is_reserved_for_lasso_and_alt_left_reaches_rotation():
     ensure_application()
     viewer = Mask3DViewer()

@@ -273,6 +273,11 @@ class Mask3DViewer(QWidget):
         self.renderer.SetBackground(0.025, 0.040, 0.044)
         self.renderer.SetBackground2(0.075, 0.100, 0.105)
         self.renderer.GradientBackgroundOn()
+        camera = self.renderer.GetActiveCamera()
+        camera.SetPosition(0.0, 1.0, 0.0)
+        camera.SetFocalPoint(0.0, 0.0, 0.0)
+        camera.SetViewUp(0.0, 0.0, 1.0)
+        camera.OrthogonalizeViewUp()
         # VTK FXAA can blank a renderer under forwarded X11/OpenGL. MSAA on the
         # render window provides compatible antialiasing on Linux and Windows.
         self.renderer.UseFXAAOff()

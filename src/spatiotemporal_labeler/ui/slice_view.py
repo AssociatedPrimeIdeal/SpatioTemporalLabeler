@@ -20,11 +20,11 @@ pg.setConfigOption("imageAxisOrder", "row-major")
 
 
 PLANE_DIRECTIONS = {
-    "X-Y": ("L - R", "P - A"),
-    "X-Z": ("L - R", "F - H"),
+    "X-Y": ("R - L", "P - A"),
+    "X-Z": ("R - L", "F - H"),
     "Y-Z": ("A - P", "F - H"),
 }
-TEMPORAL_DIRECTIONS = {"X-T": "L - R", "Y-T": "P - A", "Z-T": "F - H"}
+TEMPORAL_DIRECTIONS = {"X-T": "R - L", "Y-T": "P - A", "Z-T": "F - H"}
 AXIS_COLORS = {"X": "#ff5f5f", "Y": "#58d178", "Z": "#579dff", "T": "#f1cc4b"}
 
 
@@ -469,7 +469,7 @@ class SliceView(pg.PlotWidget):
         bottom, left = PLANE_DIRECTIONS[plane]
         self.getPlotItem().setLabel("bottom", bottom, color="#8ea4a8")
         self.getPlotItem().setLabel("left", left, color="#8ea4a8")
-        self.getViewBox().invertX(plane == "Y-Z")
+        self.getViewBox().invertX(True)
         self.getViewBox().invertY(False)
         self.image_item.strokeStarted.connect(self._stroke_started)
         self.image_item.strokeMoved.connect(self._stroke_moved)
@@ -828,6 +828,7 @@ class TemporalView(pg.PlotWidget):
         )
         self.getPlotItem().setLabel("bottom", TEMPORAL_DIRECTIONS[mode], color="#8ea4a8")
         self.getPlotItem().setLabel("left", "Time", color="#8ea4a8")
+        self.getViewBox().invertX(mode == "X-T")
         axis = mode[0]
         self.spatial_line.setPen(pg.mkPen(AXIS_COLORS[axis], width=1.3))
         signature = (float(width), float(height), float(spacing))
