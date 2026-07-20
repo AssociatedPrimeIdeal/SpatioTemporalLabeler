@@ -259,6 +259,106 @@ def test_picker_shortcut_tracks_hover_without_replacing_brush():
     finish_window(window, mask)
 
 
+def test_hover_status_shows_voxel_ras_intensity_and_label():
+    image_data = np.zeros((5, 6, 7, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    image_data[1, 2, 3, 1] = 123.456
+    mask_data[1, 2, 3, 1] = 2
+    window, image, mask = make_window(image_data, mask_data)
+    image.transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(2.0, 3.0, 4.0),
+        origin_ras=(10.0, 20.0, 30.0),
+        direction_ras=np.asarray(
+            (
+                (0.0, -1.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        ),
+    )
+    mask.transform = image.transform
+    window._set_language("en")
+    window.cursor = [0, 0, 3, 1]
+
+    window._view_hovered("X-Y", 1, 2, True)
+
+    assert window.cursor_status.text() == (
+        "X 2  Y 3  Z 4  T 2 | RAS (4, 22, 42) mm | "
+        "Intensity 123.46 | Label 2"
+    )
+
+    image.data[4, 2, 3, 2] = 7.5
+    mask.data[4, 2, 3, 2] = 1
+    window.cursor = [0, 2, 3, 1]
+    window._view_hovered("X-T", 4, 2, True)
+    assert window.cursor_status.text() == (
+        "X 5  Y 3  Z 4  T 3 | RAS (4, 28, 42) mm | "
+        "Intensity 7.5 | Label 1"
+    )
+
+    mask.data[1, 2, 3, 1] = 1
+    window._view_hovered("X-Y", 1, 2, True)
+    window.refresh_views()
+    assert window.cursor_status.text().endswith("Label 1")
+
+    window._view_hovered("X-Y", 0, 0, False)
+    assert window.cursor_status.text() == ""
+    finish_window(window, mask)
+
+
+def test_2d_views_do_not_show_hover_operation_tooltips():
+    image_data = np.ones((5, 6, 2, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+
+    assert all(
+        view.toolTip() == ""
+        for view in [*window.slice_views.values(), window.temporal_view]
+    )
+    finish_window(window, mask)
+
+
+def test_hide_labels_hold_shortcut_hides_and_restores_every_2d_overlay():
+    image_data = np.ones((5, 6, 2, 3), dtype=np.float32)
+    mask_data = np.ones(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    window.shortcuts["hide_labels_hold"] = "H"
+    window.isActiveWindow = lambda: True
+    window._applied_threshold_mask = np.ones(image_data.shape, dtype=bool)
+    window._applied_threshold_image = window.active_image
+    window.refresh_views()
+    views = [*window.slice_views.values(), window.temporal_view]
+    pressed = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_H,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    released = QKeyEvent(
+        QEvent.Type.KeyRelease,
+        Qt.Key.Key_H,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert window.eventFilter(window, pressed)
+    assert window._labels_hidden_held
+    assert all(not view.mask_item.isVisible() for view in views)
+    assert all(not view.applied_threshold_item.isVisible() for view in views)
+    assert all(view.threshold_item.isVisible() for view in views)
+
+    window.refresh_views()
+    assert all(not view.mask_item.isVisible() for view in views)
+    assert all(not view.applied_threshold_item.isVisible() for view in views)
+
+    assert window.eventFilter(window, released)
+    assert not window._labels_hidden_held
+    assert all(view.mask_item.isVisible() for view in views)
+    assert all(view.applied_threshold_item.isVisible() for view in views)
+    finish_window(window, mask)
+
+
 def test_enter_confirms_a_pending_contour():
     image_data = np.ones((7, 7, 1, 1), dtype=np.float32)
     window, _image, mask = make_window(
@@ -399,6 +499,7 @@ def test_close_all_files_clears_the_complete_workspace(monkeypatch):
     assert window.image_combo.count() == 0
     assert window.mask_combo.count() == 0
     assert window._mask_labels == {}
+    assert window._image_levels == {}
     assert window._applied_threshold_mask is None
     assert window._applied_threshold_image is None
     assert window._undo_stack == []
@@ -654,6 +755,66 @@ def test_middle_drag_window_level_direction_and_preview_plane_follow_shift():
     assert window.image_previews.plane == "X-Z"
     window._temporal_cursor_requested("Y-T", 4, 6)
     assert window.image_previews.plane == "Y-T"
+    finish_window(window, mask)
+
+
+def test_window_levels_follow_each_image_between_main_view_and_preview():
+    first_data = np.linspace(0.0, 100.0, 5 * 6 * 7 * 2, dtype=np.float32).reshape(
+        (5, 6, 7, 2)
+    )
+    window, first_image, mask = make_window(
+        first_data, np.zeros(first_data.shape, dtype=np.uint8)
+    )
+    second_image = make_sequence(first_data + 1000.0)
+    window.images.append(second_image)
+    window.image_combo.addItem("second image")
+    window._rebuild_image_previews()
+    window._window_level_changed(45.0, 30.0)
+    first_levels = (30.0, 60.0)
+    second_plot = window.image_previews._plots[1]
+
+    second_plot._adjust_window_level(20.0, -10.0)
+    preview_levels = second_plot.levels
+
+    assert window._image_levels[id(first_image)] == first_levels
+    assert window._image_levels[id(second_image)] == preview_levels
+    assert window.preview_splitter.indexOf(window.view_grid) == 0
+    assert window.preview_splitter.indexOf(window.image_previews) == 1
+
+    second_plot.activated.emit(1)
+
+    assert window.active_image is second_image
+    assert window._levels == preview_levels
+    window._window_level_changed(1100.0, 50.0)
+    window.image_combo.setCurrentIndex(0)
+    assert window._levels == first_levels
+    window.image_combo.setCurrentIndex(1)
+    assert window._levels == (1075.0, 1125.0)
+    finish_window(window, mask)
+
+
+def test_reset_shortcut_prefers_the_hovered_image_preview(monkeypatch):
+    image_data = np.ones((5, 6, 2, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.shortcuts["reset_view"] = "R"
+    window.isActiveWindow = lambda: True
+    main_resets = []
+    monkeypatch.setattr(
+        window.image_previews,
+        "reset_hovered_preview",
+        lambda _watched=None: True,
+    )
+    monkeypatch.setattr(window, "_reset_2d_views", lambda: main_resets.append(None))
+    pressed = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_R,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert window.eventFilter(window, pressed)
+    assert main_resets == []
     finish_window(window, mask)
 
 

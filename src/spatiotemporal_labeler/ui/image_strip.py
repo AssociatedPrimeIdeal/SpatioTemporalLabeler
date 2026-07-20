@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -23,14 +23,41 @@ from spatiotemporal_labeler.io import Sequence4D
 PREVIEW_PLANES = ("X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T")
 
 
+class ThumbnailImageItem(pg.ImageItem):
+    windowLevelRequested = Signal(float, float)
+
+    def mouseDragEvent(self, event: Any) -> None:  # noqa: N802 - pyqtgraph API
+        if event.button() != Qt.MouseButton.MiddleButton:
+            super().mouseDragEvent(event)
+            return
+        if not event.isStart() and not event.isFinish():
+            current = event.scenePos() if hasattr(event, "scenePos") else event.pos()
+            previous = (
+                event.lastScenePos() if hasattr(event, "lastScenePos") else event.lastPos()
+            )
+            delta = current - previous
+            self.windowLevelRequested.emit(float(delta.x()), float(delta.y()))
+        event.accept()
+
+
 class ThumbnailPlot(pg.PlotWidget):
     activated = Signal(int)
+    levelsChanged = Signal(int, float, float)
 
-    def __init__(self, index: int, parent: Any = None) -> None:
+    def __init__(
+        self,
+        index: int,
+        initial_levels: tuple[float, float] | None = None,
+        parent: Any = None,
+    ) -> None:
         super().__init__(parent=parent, background="#101719")
         self.index = index
         self._geometry_signature: tuple[int, int, str] | None = None
-        self.item = pg.ImageItem()
+        self._default_levels: tuple[float, float] | None = None
+        self._levels = initial_levels
+        self._value_range = (0.0, 1.0)
+        self.item = ThumbnailImageItem()
+        self.item.windowLevelRequested.connect(self._adjust_window_level)
         self.addItem(self.item)
         self.hideAxis("left")
         self.hideAxis("bottom")
@@ -40,14 +67,33 @@ class ThumbnailPlot(pg.PlotWidget):
         self.setMinimumSize(130, 90)
         self.setFixedHeight(110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.level_feedback = QLabel(self.viewport())
+        self.level_feedback.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.level_feedback.setStyleSheet(
+            "color: #f4f8f8; background: rgba(8, 18, 20, 205); "
+            "border: 1px solid #668084; border-radius: 2px; padding: 2px 4px;"
+        )
+        self.level_feedback.hide()
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.setInterval(900)
+        self._feedback_timer.timeout.connect(self.level_feedback.hide)
 
     def set_image(
         self,
         image: np.ndarray,
-        levels: tuple[float, float],
+        default_levels: tuple[float, float],
+        value_range: tuple[float, float],
         plane: str,
     ) -> None:
-        self.item.setImage(np.asarray(image).T, autoLevels=False, levels=levels)
+        self._default_levels = default_levels
+        self._value_range = (
+            min(value_range[0], default_levels[0]),
+            max(value_range[1], default_levels[1]),
+        )
+        if self._levels is None:
+            self._levels = default_levels
+        self.item.setImage(np.asarray(image).T, autoLevels=False, levels=self._levels)
         invert_x = plane == "Y-Z"
         signature = (*image.shape, plane)
         view_box = self.getViewBox()
@@ -56,6 +102,60 @@ class ThumbnailPlot(pg.PlotWidget):
         if signature != self._geometry_signature:
             self._geometry_signature = signature
             self.autoRange(padding=0.02)
+
+    @property
+    def levels(self) -> tuple[float, float] | None:
+        return self._levels
+
+    def _adjust_window_level(self, delta_width: float, delta_level: float) -> None:
+        if self._levels is None:
+            return
+        data_low, data_high = self._value_range
+        span = max(float(data_high - data_low), 1e-9)
+        low, high = self._levels
+        center = (low + high) * 0.5 - float(delta_level) * span / 200.0
+        width = high - low + float(delta_width) * span / 200.0
+        center = float(np.clip(center, data_low, data_high))
+        width = float(np.clip(width, max(span / 1000.0, 1e-9), span * 2.0))
+        self._levels = (center - width * 0.5, center + width * 0.5)
+        self.item.setLevels(self._levels)
+        self.levelsChanged.emit(self.index, *self._levels)
+        self._show_level_feedback()
+
+    def reset_display(self) -> bool:
+        if self._default_levels is None:
+            return False
+        self._levels = self._default_levels
+        self.item.setLevels(self._levels)
+        self.autoRange(padding=0.02)
+        self.levelsChanged.emit(self.index, *self._levels)
+        self._show_level_feedback()
+        return True
+
+    def _show_level_feedback(self) -> None:
+        if self._levels is None:
+            return
+        low, high = self._levels
+        self.level_feedback.setText(
+            f"WL {(low + high) * 0.5:.5g}   WW {high - low:.5g}"
+        )
+        self.level_feedback.adjustSize()
+        self._position_level_feedback()
+        self.level_feedback.show()
+        self.level_feedback.raise_()
+        self._feedback_timer.start()
+
+    def _position_level_feedback(self) -> None:
+        viewport = self.viewport()
+        self.level_feedback.move(
+            6,
+            max(6, viewport.height() - self.level_feedback.height() - 6),
+        )
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if "level_feedback" in self.__dict__:
+            self._position_level_feedback()
 
     def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -67,16 +167,17 @@ class ThumbnailPlot(pg.PlotWidget):
         self.getViewBox().scaleBy((factor, factor), center=center)
         event.accept()
 
-    def mousePressEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+    def mouseDoubleClickEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
             self.activated.emit(self.index)
             event.accept()
             return
-        super().mousePressEvent(event)
+        super().mouseDoubleClickEvent(event)
 
 
 class ImagePreviewStrip(QFrame):
     imageActivated = Signal(int)
+    imageLevelsChanged = Signal(int, float, float)
     collapsedChanged = Signal(bool)
     planeChanged = Signal(str)
 
@@ -87,6 +188,7 @@ class ImagePreviewStrip(QFrame):
         self._language = "en"
         self._plots: dict[int, ThumbnailPlot] = {}
         self._cards: dict[int, QWidget] = {}
+        self._value_ranges: dict[int, tuple[float, float]] = {}
         self.layout_root = QVBoxLayout(self)
         self.layout_root.setContentsMargins(5, 5, 5, 5)
         self.layout_root.setSpacing(5)
@@ -150,7 +252,7 @@ class ImagePreviewStrip(QFrame):
             self.layout_root.setContentsMargins(2, 5, 2, 5)
         else:
             self.setMinimumWidth(155)
-            self.setMaximumWidth(210)
+            self.setMaximumWidth(420)
             self.layout_root.setContentsMargins(5, 5, 5, 5)
         self._update_collapse_button()
         if changed and emit:
@@ -169,13 +271,23 @@ class ImagePreviewStrip(QFrame):
         else:
             self.collapse_button.setToolTip("收起其他图像" if chinese else "Collapse other images")
 
-    def rebuild(self, images: list[Sequence4D], active_index: int) -> None:
+    def rebuild(
+        self,
+        images: list[Sequence4D],
+        active_index: int,
+        levels_by_image: dict[int, tuple[float, float]] | None = None,
+    ) -> None:
         while self.items_layout.count():
             item = self.items_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
         self._plots.clear()
         self._cards.clear()
+        self._value_ranges = {
+            index: self._sequence_value_range(sequence)
+            for index, sequence in enumerate(images)
+            if index != active_index
+        }
         for index, sequence in enumerate(images):
             if index == active_index:
                 continue
@@ -188,13 +300,26 @@ class ImagePreviewStrip(QFrame):
             name = QLabel(sequence.display_name)
             name.setToolTip(sequence.display_name)
             card_layout.addWidget(name)
-            plot = ThumbnailPlot(index)
+            initial_levels = (
+                levels_by_image.get(id(sequence)) if levels_by_image is not None else None
+            )
+            plot = ThumbnailPlot(index, initial_levels=initial_levels)
             plot.activated.connect(self.imageActivated)
+            plot.levelsChanged.connect(self.imageLevelsChanged.emit)
             card_layout.addWidget(plot)
             self.items_layout.addWidget(card)
             self._plots[index] = plot
             self._cards[index] = card
         self.setVisible(bool(self._plots))
+
+    def reset_hovered_preview(self, watched: object | None = None) -> bool:
+        for plot in self._plots.values():
+            watched_in_plot = watched is plot or watched is plot.viewport()
+            if isinstance(watched, QWidget):
+                watched_in_plot = watched_in_plot or plot.isAncestorOf(watched)
+            if watched_in_plot or plot.underMouse() or plot.viewport().underMouse():
+                return plot.reset_display()
+        return False
 
     def update_images(
         self,
@@ -212,7 +337,16 @@ class ImagePreviewStrip(QFrame):
                 levels = (float(low), float(high if high != low else low + 1.0))
             else:
                 levels = (0.0, 1.0)
-            plot.set_image(image, levels, self.plane)
+            plot.set_image(image, levels, self._value_ranges[index], self.plane)
+
+    @staticmethod
+    def _sequence_value_range(sequence: Sequence4D) -> tuple[float, float]:
+        sample = sequence.data.flat[:: max(1, sequence.data.size // 500_000)]
+        finite = sample[np.isfinite(sample)]
+        if not finite.size:
+            return (0.0, 1.0)
+        low, high = float(finite.min()), float(finite.max())
+        return (low, high if high != low else low + 1.0)
 
     @staticmethod
     def _extract_preview(

@@ -28,6 +28,41 @@ class WheelEvent:
         self.accepted = True
 
 
+class DragEvent:
+    def __init__(self, delta):
+        self._delta = QPointF(*delta)
+        self.accepted = False
+
+    def button(self):
+        return Qt.MouseButton.MiddleButton
+
+    def isStart(self):
+        return False
+
+    def isFinish(self):
+        return False
+
+    def scenePos(self):
+        return self._delta
+
+    def lastScenePos(self):
+        return QPointF()
+
+    def accept(self):
+        self.accepted = True
+
+
+class DoubleClickEvent:
+    def __init__(self):
+        self.accepted = False
+
+    def button(self):
+        return Qt.MouseButton.LeftButton
+
+    def accept(self):
+        self.accepted = True
+
+
 def make_sequence(name):
     transform = AxisTransform(
         original_axis_for_canonical=(0, 1, 2, 3),
@@ -61,6 +96,10 @@ def test_other_image_strip_collapses_instead_of_closing(tmp_path):
     assert strip.maximumWidth() == 32
     assert strip.content.isHidden()
     assert states == [True]
+
+    strip.set_collapsed(False)
+
+    assert strip.maximumWidth() == 420
 
 
 def test_other_image_preview_plane_is_selectable(tmp_path):
@@ -106,3 +145,82 @@ def test_other_image_preview_ctrl_wheel_zoom_survives_image_refresh(tmp_path):
     strip.set_plane("Y-Z")
     strip.update_images(images, (1, 1, 1, 1))
     assert plot.getViewBox().state["xInverted"]
+
+
+def test_other_image_preview_middle_drag_adjusts_its_own_window(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [
+        make_sequence(tmp_path / "first.nrrd"),
+        make_sequence(tmp_path / "second.nrrd"),
+        make_sequence(tmp_path / "third.nrrd"),
+    ]
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+    strip.update_images(images, (0, 0, 0, 0))
+    plot = strip._plots[1]
+    untouched_levels = strip._plots[2].levels
+    initial_low, initial_high = plot.levels
+    initial_center = (initial_low + initial_high) * 0.5
+    initial_width = initial_high - initial_low
+    event = DragEvent((20.0, -10.0))
+    changes = []
+    strip.imageLevelsChanged.connect(
+        lambda index, low, high: changes.append((index, low, high))
+    )
+
+    plot.item.mouseDragEvent(event)
+
+    adjusted_levels = plot.levels
+    adjusted_low, adjusted_high = adjusted_levels
+    assert event.accepted
+    assert adjusted_high - adjusted_low > initial_width
+    assert (adjusted_low + adjusted_high) * 0.5 > initial_center
+    assert strip._plots[2].levels == untouched_levels
+    assert tuple(plot.item.levels) == adjusted_levels
+    assert changes == [(1, *adjusted_levels)]
+    assert not plot.level_feedback.isHidden()
+    assert "WL" in plot.level_feedback.text()
+    assert "WW" in plot.level_feedback.text()
+
+    strip.update_images(images, (1, 1, 1, 1))
+
+    assert plot.levels == adjusted_levels
+    assert tuple(plot.item.levels) == adjusted_levels
+
+
+def test_other_image_preview_reset_restores_auto_levels_and_zoom(tmp_path, monkeypatch):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+    strip.update_images(images, (0, 0, 0, 0))
+    plot = strip._plots[1]
+    initial_levels = plot.levels
+    initial_width = np.ptp(plot.getViewBox().viewRange()[0])
+    plot.item.mouseDragEvent(DragEvent((20.0, -10.0)))
+    plot.wheelEvent(WheelEvent(Qt.KeyboardModifier.ControlModifier))
+    monkeypatch.setattr(plot, "underMouse", lambda: True)
+
+    assert strip.reset_hovered_preview()
+
+    assert plot.levels == initial_levels
+    assert tuple(plot.item.levels) == initial_levels
+    assert np.isclose(np.ptp(plot.getViewBox().viewRange()[0]), initial_width)
+
+
+def test_other_image_preview_activates_on_double_click_and_restores_saved_levels(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    saved_levels = (40.0, 80.0)
+    strip = ImagePreviewStrip()
+    activated = []
+    strip.imageActivated.connect(activated.append)
+    strip.rebuild(images, active_index=0, levels_by_image={id(images[1]): saved_levels})
+    strip.update_images(images, (0, 0, 0, 0))
+    event = DoubleClickEvent()
+
+    strip._plots[1].mouseDoubleClickEvent(event)
+
+    assert event.accepted
+    assert activated == [1]
+    assert strip._plots[1].levels == saved_levels

@@ -16,13 +16,14 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 ## Features
 
 - Linked X-Y, X-Z, Y-Z, and selectable X-T/Y-T/Z-T views
+- Hover status with voxel indices, RAS coordinates, image intensity, and label value
 - Coalesced all-label 3D updates during time navigation
 - Multiple image sequences, label sequences, and integer labels
-- Unified image/label import classification, drag-and-drop, and selectable-plane previews for other loaded images
+- Unified image/label import classification, drag-and-drop, and resizable selectable-plane previews for other loaded images
 - Physical round or square brush and eraser footprints
 - Immediate 2D/3D scissors lasso for label erase or replacement, including all-time-frame edits
 - Closed-contour raster drawing with interior fill
-- Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width
+- Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width with per-image persistence and live values in other-image previews
 - Optional all-time-frame spatial editing as one undoable operation
 - Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
 - Per-label opacity from the label-row context menu plus a global label opacity control
@@ -91,7 +92,8 @@ spatiotemporal-labeler
 | Right drag | Temporarily erase without changing the selected tool |
 | Hold Shift and move | Move the linked spatial cursor without editing |
 | Shift + left drag | Pan a 2D view |
-| Middle drag | Adjust window width horizontally and window level vertically |
+| Middle drag | Adjust window width horizontally and window level vertically in the dragged view |
+| Double-click an other-image preview | Make that image sequence active |
 | Ctrl + wheel | Zoom a 2D view |
 | Shift + wheel | Change brush or eraser diameter |
 | Wheel in a spatial view | Change its orthogonal slice |
@@ -99,7 +101,8 @@ spatiotemporal-labeler
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
 | `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or seed grow |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |
-| `R` | Reset 2D zoom and pan |
+| Hold `H` | Temporarily hide all 2D label overlays |
+| `R` | Reset 2D zoom and pan, or auto-window and reset the hovered other-image preview |
 | Left / Right | Step through time frames |
 | Hold `CapsLock` | Temporarily apply spatial edits to all frames |
 | Hold `Q` | Bypass a checked applied threshold mask while drawing or erasing |

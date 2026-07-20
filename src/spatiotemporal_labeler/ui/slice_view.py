@@ -422,10 +422,18 @@ class SliceView(pg.PlotWidget):
         self._locator_axes = (h_axis, v_axis)
         self._axis_lengths = (0, 0)
         self.crosshair_vertical = pg.InfiniteLine(
-            angle=90, movable=False, pen=pg.mkPen(AXIS_COLORS[h_axis], width=1.3)
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(
+                AXIS_COLORS[h_axis], width=1.3, style=Qt.PenStyle.DashLine
+            ),
         )
         self.crosshair_horizontal = pg.InfiniteLine(
-            angle=0, movable=False, pen=pg.mkPen(AXIS_COLORS[v_axis], width=1.3)
+            angle=0,
+            movable=False,
+            pen=pg.mkPen(
+                AXIS_COLORS[v_axis], width=1.3, style=Qt.PenStyle.DashLine
+            ),
         )
         self.crosshair_vertical.setZValue(30)
         self.crosshair_horizontal.setZValue(30)
@@ -573,6 +581,10 @@ class SliceView(pg.PlotWidget):
 
     def set_levels(self, levels: tuple[float, float]) -> None:
         self.image_item.setLevels(levels)
+
+    def set_label_overlays_visible(self, visible: bool) -> None:
+        self.mask_item.setVisible(bool(visible))
+        self.applied_threshold_item.setVisible(bool(visible))
 
     def set_slice(
         self,
@@ -747,9 +759,18 @@ class TemporalView(pg.PlotWidget):
         self.applied_threshold_item.setZValue(6)
         self.mask_item.setZValue(10)
         self.contour_item.setZValue(20)
-        self.time_line = pg.InfiniteLine(angle=0, pen=pg.mkPen(AXIS_COLORS["T"], width=1.3))
+        self.time_line = pg.InfiniteLine(
+            angle=0,
+            pen=pg.mkPen(
+                AXIS_COLORS["T"], width=1.3, style=Qt.PenStyle.DashLine
+            ),
+        )
         self.spatial_line = pg.InfiniteLine(
-            angle=90, movable=False, pen=pg.mkPen(AXIS_COLORS["X"], width=1.3)
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(
+                AXIS_COLORS["X"], width=1.3, style=Qt.PenStyle.DashLine
+            ),
         )
         self.time_line.setZValue(30)
         self.spatial_line.setZValue(30)
@@ -819,6 +840,10 @@ class TemporalView(pg.PlotWidget):
     def set_levels(self, levels: tuple[float, float]) -> None:
         self.image_item.setLevels(levels)
 
+    def set_label_overlays_visible(self, visible: bool) -> None:
+        self.mask_item.setVisible(bool(visible))
+        self.applied_threshold_item.setVisible(bool(visible))
+
     def set_sequence_slice(
         self,
         image: np.ndarray,
@@ -878,7 +903,9 @@ class TemporalView(pg.PlotWidget):
         self.getPlotItem().setLabel("left", "Time", color="#8ea4a8")
         self.getViewBox().invertX(mode == "X-T")
         axis = mode[0]
-        self.spatial_line.setPen(pg.mkPen(AXIS_COLORS[axis], width=1.3))
+        self.spatial_line.setPen(
+            pg.mkPen(AXIS_COLORS[axis], width=1.3, style=Qt.PenStyle.DashLine)
+        )
         signature = (float(width), float(height), float(spacing))
         self._data_rect = rect
         if signature != self._geometry_signature:

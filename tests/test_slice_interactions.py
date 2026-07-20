@@ -283,6 +283,8 @@ def test_spatial_locator_handles_emit_clipped_axis_indices():
     assert all(handle.isVisible() for pair in view._locator_handles for handle in pair)
     assert not view.crosshair_vertical.movable
     assert not view.crosshair_horizontal.movable
+    assert view.crosshair_vertical.pen.style() == Qt.PenStyle.DashLine
+    assert view.crosshair_horizontal.pen.style() == Qt.PenStyle.DashLine
     view.close()
     view.deleteLater()
 
@@ -311,6 +313,9 @@ def test_x_spatial_and_temporal_views_run_from_right_to_left():
         0,
         "Y 0, Z 0",
     )
+
+    assert temporal_view.spatial_line.pen.style() == Qt.PenStyle.DashLine
+    assert temporal_view.time_line.pen.style() == Qt.PenStyle.DashLine
 
     for view in spatial_views:
         assert view.getAxis("bottom").labelText == "R - L"

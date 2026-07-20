@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSlider,
     QSplitter,
+    QSizePolicy,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -130,6 +131,7 @@ class MainWindow(QMainWindow):
         self.active_label_value = 1
         self._levels = (0.0, 1.0)
         self._image_value_range = (0.0, 1.0)
+        self._image_levels: dict[int, tuple[float, float]] = {}
         self._threshold_cache: np.ndarray | None = None
         self._threshold_signature: tuple[object, ...] | None = None
         self._threshold_frame_cache: dict[int, np.ndarray] = {}
@@ -144,6 +146,8 @@ class MainWindow(QMainWindow):
         self._all_frames_held = False
         self._picker_held = False
         self._threshold_bypass_held = False
+        self._labels_hidden_held = False
+        self._hover_status_context: tuple[str, int, int] | None = None
         self._stroke_ignore_threshold = False
         self._maximized_plane: str | None = None
         self._last_clicked_slice_plane: str | None = None
@@ -223,7 +227,10 @@ class MainWindow(QMainWindow):
         slices = QWidget()
         slices_layout = QHBoxLayout(slices)
         slices_layout.setContentsMargins(0, 0, 0, 0)
-        slices_layout.setSpacing(5)
+        slices_layout.setSpacing(0)
+        self.preview_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.preview_splitter.setChildrenCollapsible(False)
+        slices_layout.addWidget(self.preview_splitter)
         self.view_grid = QWidget()
         grid = QGridLayout(self.view_grid)
         self.view_grid_layout = grid
@@ -264,13 +271,17 @@ class MainWindow(QMainWindow):
         grid.setRowStretch(1, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        slices_layout.addWidget(self.view_grid, 1)
+        self.preview_splitter.addWidget(self.view_grid)
         self.image_previews = ImagePreviewStrip()
         self.image_previews.imageActivated.connect(self.image_combo.setCurrentIndex)
+        self.image_previews.imageLevelsChanged.connect(self._preview_levels_changed)
         self.image_previews.collapsedChanged.connect(self._image_previews_collapsed)
         self.image_previews.planeChanged.connect(self._preview_plane_changed)
         self.image_previews.hide()
-        slices_layout.addWidget(self.image_previews)
+        self.preview_splitter.addWidget(self.image_previews)
+        self.preview_splitter.setStretchFactor(0, 1)
+        self.preview_splitter.setStretchFactor(1, 0)
+        self.preview_splitter.setSizes([780, 190])
         splitter.addWidget(slices)
 
         render_panel = QWidget()
@@ -338,6 +349,14 @@ class MainWindow(QMainWindow):
             view.hoverMoved.connect(self._view_hovered)
             view.windowLevelDragged.connect(self._adjust_window_level)
         self.setCentralWidget(root)
+        self.cursor_status = QLabel()
+        self.cursor_status.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.cursor_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.statusBar().addPermanentWidget(self.cursor_status, 1)
 
         self.threshold_dock = QDockWidget(self)
         self.threshold_dock.setAllowedAreas(
@@ -688,8 +707,7 @@ class MainWindow(QMainWindow):
         self.interpolation_panel.set_language(self.language)
         self.window_level_panel.set_language(self.language)
         self.image_previews.set_language(self.language)
-        for view in [*self.slice_views.values(), self.temporal_view]:
-            view.setToolTip(self._tr("locate_tip"))
+        self._refresh_cursor_status()
         if self.active_image is None:
             self.statusBar().showMessage(self._tr("load_start"))
 
@@ -733,6 +751,7 @@ class MainWindow(QMainWindow):
         }:
             self._all_frames_held = False
             self._threshold_bypass_held = False
+            self._set_labels_hidden_held(False)
             self._set_picker_held(False)
             return super().eventFilter(watched, event)
         if event.type() not in {QEvent.Type.KeyPress, QEvent.Type.KeyRelease}:
@@ -762,6 +781,11 @@ class MainWindow(QMainWindow):
         if self._event_matches(key_event, "threshold_bypass") and not editing_text:
             self._threshold_bypass_held = pressed
             return True
+        if self._event_matches(key_event, "hide_labels_hold") and (
+            (pressed and not editing_text) or self._labels_hidden_held
+        ):
+            self._set_labels_hidden_held(pressed)
+            return True
         if pressed and not editing_text:
             if key_event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                 if self._pending_contour is not None:
@@ -781,6 +805,8 @@ class MainWindow(QMainWindow):
                 self._step_time(1)
                 return True
             if self._event_matches(key_event, "reset_view"):
+                if self.image_previews.reset_hovered_preview(watched):
+                    return True
                 self._reset_2d_views()
                 return True
         return super().eventFilter(watched, event)
@@ -806,6 +832,9 @@ class MainWindow(QMainWindow):
     def _window_level_changed(self, center: float, width: float) -> None:
         width = max(float(width), 1e-9)
         self._levels = (center - width * 0.5, center + width * 0.5)
+        image = self.active_image
+        if image is not None:
+            self._image_levels[id(image)] = self._levels
         for view in [*self.slice_views.values(), self.temporal_view]:
             view.set_levels(self._levels)
 
@@ -971,13 +1000,21 @@ class MainWindow(QMainWindow):
     def _preview_plane_changed(self, _plane: str) -> None:
         self.image_previews.update_images(self.images, tuple(self.cursor))
 
+    def _preview_levels_changed(self, index: int, low: float, high: float) -> None:
+        if 0 <= index < len(self.images):
+            self._image_levels[id(self.images[index])] = (float(low), float(high))
+
     def _rebuild_image_previews(self) -> None:
         if not hasattr(self, "image_previews_action"):
             return
         if len(self.images) <= 1:
             self.image_previews.hide()
             return
-        self.image_previews.rebuild(self.images, self.image_combo.currentIndex())
+        self.image_previews.rebuild(
+            self.images,
+            self.image_combo.currentIndex(),
+            self._image_levels,
+        )
         self.image_previews.set_collapsed(not self.image_previews_action.isChecked(), emit=False)
         self.image_previews.update_images(self.images, tuple(self.cursor))
 
@@ -1254,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.images.clear()
         self.masks.clear()
         self._mask_labels.clear()
+        self._image_levels.clear()
 
         self.cursor = [0, 0, 0, 0]
         self.active_label_value = 1
@@ -1270,7 +1308,10 @@ class MainWindow(QMainWindow):
         self._maximized_plane = None
         self._all_frames_held = False
         self._threshold_bypass_held = False
+        self._set_labels_hidden_held(False)
         self._set_picker_held(False)
+        self._hover_status_context = None
+        self.cursor_status.clear()
         self.all_frames_toggle.setChecked(False)
         self.tool_actions["brush"].setChecked(True)
         self._set_tool("brush")
@@ -1294,6 +1335,8 @@ class MainWindow(QMainWindow):
     def _active_image_changed(self, _index: int) -> None:
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
+        self._hover_status_context = None
+        self.cursor_status.clear()
         self._applied_threshold_mask = None
         self._applied_threshold_image = None
         self._applied_threshold_visible = True
@@ -1302,19 +1345,27 @@ class MainWindow(QMainWindow):
             self.refresh_views()
             return
         self.cursor = [max(0, size // 2) for size in image.data.shape]
-        sample = image.data.ravel()[:: max(1, image.data.size // 500_000)]
+        sample = image.data.flat[:: max(1, image.data.size // 500_000)]
         finite = sample[np.isfinite(sample)]
         if finite.size:
-            low, high = np.percentile(finite, (1.0, 99.0))
-            self._levels = (float(low), float(high if high != low else low + 1.0))
             data_low, data_high = float(finite.min()), float(finite.max())
             self._image_value_range = (data_low, data_high)
-            self.threshold_panel.set_image_range(data_low, data_high)
-            self.grow_panel.set_image_range(data_low, data_high)
-            self.window_level_panel.set_image_range(data_low, data_high)
-            self._sync_window_controls()
-            if self.threshold_panel.method_key != "manual":
-                self._threshold_method_changed(self.threshold_panel.method_key)
+            saved_levels = self._image_levels.get(id(image))
+            if saved_levels is None:
+                low, high = np.percentile(finite, (1.0, 99.0))
+                saved_levels = (float(low), float(high if high != low else low + 1.0))
+                self._image_levels[id(image)] = saved_levels
+            self._levels = saved_levels
+        else:
+            self._image_value_range = (0.0, 1.0)
+            self._levels = self._image_levels.setdefault(id(image), (0.0, 1.0))
+        data_low, data_high = self._image_value_range
+        self.threshold_panel.set_image_range(data_low, data_high)
+        self.grow_panel.set_image_range(data_low, data_high)
+        self.window_level_panel.set_image_range(data_low, data_high)
+        self._sync_window_controls()
+        if self.threshold_panel.method_key != "manual":
+            self._threshold_method_changed(self.threshold_panel.method_key)
         self._invalidate_threshold()
         if self.active_mask is None:
             match = next(
@@ -1370,6 +1421,7 @@ class MainWindow(QMainWindow):
         self._clear_lasso_overlays()
         self._sync_label_panel()
         self._sync_interpolation_panel()
+        self._refresh_cursor_status()
         self.refresh_views(update_3d=True)
         self._update_enabled_state()
 
@@ -1626,6 +1678,7 @@ class MainWindow(QMainWindow):
             self._global_label_opacity,
             self._applied_threshold_opacity,
         )
+        self._refresh_cursor_status()
         self._sync_slider()
         self.viewer_3d.set_cursor(
             tuple(self.cursor[:3]),
@@ -2212,8 +2265,58 @@ class MainWindow(QMainWindow):
         }[plane]
 
     def _view_hovered(self, plane: str, h: int, v: int, visible: bool) -> None:
+        if visible:
+            self._hover_status_context = (plane, h, v)
+            self._refresh_cursor_status()
+        elif self._hover_status_context is not None and self._hover_status_context[0] == plane:
+            self._hover_status_context = None
+            self.cursor_status.clear()
         if self._picker_held and visible:
             self._pick_label(plane, h, v, show_background=False)
+
+    @staticmethod
+    def _format_status_value(value: float) -> str:
+        numeric = float(value)
+        if np.isnan(numeric):
+            return "NaN"
+        if np.isposinf(numeric):
+            return "Inf"
+        if np.isneginf(numeric):
+            return "-Inf"
+        return f"{numeric:.5g}"
+
+    def _refresh_cursor_status(self) -> None:
+        context = self._hover_status_context
+        image = self.active_image
+        if context is None or image is None:
+            self.cursor_status.clear()
+            return
+        plane, h, v = context
+        if not self._valid_plane_point(plane, h, v):
+            self.cursor_status.clear()
+            return
+        x, y, z, t = self._voxel_for_plane(plane, h, v)
+        voxel = (x, y, z, t)
+        physical = np.asarray(image.transform.origin_ras, dtype=float) + (
+            image.transform.direction_ras
+            @ (np.asarray((x, y, z), dtype=float) * np.asarray(image.spacing_xyz))
+        )
+        mask = self.active_mask
+        label = int(mask.data[voxel]) if mask is not None else "-"
+        self.cursor_status.setText(
+            self._tr(
+                "cursor_status",
+                x=x + 1,
+                y=y + 1,
+                z=z + 1,
+                t=t + 1,
+                rx=self._format_status_value(physical[0]),
+                ry=self._format_status_value(physical[1]),
+                rz=self._format_status_value(physical[2]),
+                intensity=self._format_status_value(image.data[voxel]),
+                label=label,
+            )
+        )
 
     def _pick_label(
         self, plane: str, h: int, v: int, show_background: bool = True
@@ -2584,6 +2687,14 @@ class MainWindow(QMainWindow):
             return
         self._picker_held = enabled
         self._brush_settings_changed()
+
+    def _set_labels_hidden_held(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._labels_hidden_held == enabled:
+            return
+        self._labels_hidden_held = enabled
+        for view in [*self.slice_views.values(), self.temporal_view]:
+            view.set_label_overlays_visible(not enabled)
 
     def _brush_settings_changed(self, _value: object = None) -> None:
         if not hasattr(self, "brush_shape"):
