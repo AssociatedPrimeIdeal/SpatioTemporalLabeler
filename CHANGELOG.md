@@ -4,6 +4,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ## Unreleased
 
+### Added
+
+### Changed
+
+### Fixed
+
+## 0.2.8 - 2026-07-21
+
 ### Changed
 
 - Other-image previews now match the main slice view's RAS orientation and physical aspect ratio, and map the active cursor through RAS coordinates when voxel grids differ.
