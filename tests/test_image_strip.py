@@ -117,11 +117,44 @@ def test_other_image_preview_plane_is_selectable(tmp_path):
     assert strip.plane == "X-Z"
     assert changed == ["X-Z"]
     assert np.array_equal(strip._plots[1].item.image, images[1].data[:, 2, :, 4].T)
+    assert strip._plots[1].getViewBox().state["xInverted"]
+    assert strip._plots[1].getViewBox().state["aspectLocked"]
 
     strip.set_plane("Y-T")
     strip.update_images(images, cursor)
 
     assert np.array_equal(strip._plots[1].item.image, images[1].data[1, :, 1, :].T)
+    assert not strip._plots[1].getViewBox().state["xInverted"]
+    assert not strip._plots[1].getViewBox().state["aspectLocked"]
+
+
+def test_other_image_preview_uses_physical_location_spacing_and_orientation(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    images[0].transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(2.0, 3.0, 4.0),
+        origin_ras=(0.0, 0.0, 0.0),
+        direction_ras=np.eye(3),
+    )
+    images[1].transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(2.0, 3.0, 4.0),
+        origin_ras=(0.0, 0.0, 4.0),
+        direction_ras=np.eye(3),
+    )
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+
+    strip.update_images(images, (1, 2, 2, 4), reference_image=images[0])
+
+    plot = strip._plots[1]
+    assert np.array_equal(plot.item.image, images[1].data[:, :, 1, 4].T)
+    assert plot.getViewBox().state["xInverted"]
+    assert np.isclose(plot.item.transform().m11(), 2.0)
+    assert np.isclose(plot.item.transform().m22(), 3.0)
 
 
 def test_other_image_preview_ctrl_wheel_zoom_survives_image_refresh(tmp_path):

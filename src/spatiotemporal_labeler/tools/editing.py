@@ -12,6 +12,7 @@ def apply_disk(
     radius_mm: float,
     spacing: tuple[float, float],
     value: int,
+    allowed: NDArray[np.bool_] | None = None,
 ) -> tuple[slice, slice] | None:
     """Paint a physically circular disk into a 2D H,V plane."""
     h_center, v_center = center
@@ -24,7 +25,10 @@ def apply_disk(
     h_grid, v_grid = np.ogrid[h0:h1, v0:v1]
     disk = ((h_grid - h_center) * spacing[0]) ** 2 + ((v_grid - v_center) * spacing[1]) ** 2
     region = plane[h0:h1, v0:v1]
-    region[disk <= radius_mm**2] = value
+    footprint = disk <= radius_mm**2
+    if allowed is not None:
+        footprint &= np.asarray(allowed[h0:h1, v0:v1], dtype=bool)
+    region[footprint] = value
     return slice(h0, h1), slice(v0, v1)
 
 
@@ -34,6 +38,7 @@ def apply_square(
     radius_mm: float,
     spacing: tuple[float, float],
     value: int,
+    allowed: NDArray[np.bool_] | None = None,
 ) -> tuple[slice, slice] | None:
     """Paint a physically square, axis-aligned footprint into a 2D H,V plane."""
     h_center, v_center = center
@@ -43,7 +48,11 @@ def apply_square(
     v0, v1 = max(0, v_center - v_radius), min(plane.shape[1], v_center + v_radius + 1)
     if h0 >= h1 or v0 >= v1:
         return None
-    plane[h0:h1, v0:v1] = value
+    region = plane[h0:h1, v0:v1]
+    if allowed is None:
+        region[...] = value
+    else:
+        region[np.asarray(allowed[h0:h1, v0:v1], dtype=bool)] = value
     return slice(h0, h1), slice(v0, v1)
 
 

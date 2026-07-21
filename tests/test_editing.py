@@ -48,6 +48,35 @@ def test_square_uses_physical_diameter():
     assert plane[7, 10] == 0
 
 
+def test_brush_operations_only_write_inside_the_allowed_selection():
+    allowed = np.zeros((15, 15), dtype=bool)
+    allowed[7, 7] = True
+
+    disk = np.zeros(allowed.shape, dtype=np.uint8)
+    apply_disk(
+        disk,
+        (7, 7),
+        radius_mm=4.0,
+        spacing=(1.0, 1.0),
+        value=3,
+        allowed=allowed,
+    )
+    square = np.zeros(allowed.shape, dtype=np.uint8)
+    apply_square(
+        square,
+        (7, 7),
+        radius_mm=4.0,
+        spacing=(1.0, 1.0),
+        value=4,
+        allowed=allowed,
+    )
+
+    assert np.count_nonzero(disk) == 1
+    assert disk[7, 7] == 3
+    assert np.count_nonzero(square) == 1
+    assert square[7, 7] == 4
+
+
 def test_raster_line_contains_each_pixel_without_gaps():
     points = raster_line((1, 1), (7, 4))
 

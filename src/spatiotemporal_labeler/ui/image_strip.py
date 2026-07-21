@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QRectF, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -21,6 +21,8 @@ from spatiotemporal_labeler.io import Sequence4D
 
 
 PREVIEW_PLANES = ("X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T")
+SPATIAL_PLANES = {"X-Y": (0, 1), "X-Z": (0, 2), "Y-Z": (1, 2)}
+TEMPORAL_PLANES = {"X-T": 0, "Y-T": 1, "Z-T": 2}
 
 
 class ThumbnailImageItem(pg.ImageItem):
@@ -52,7 +54,7 @@ class ThumbnailPlot(pg.PlotWidget):
     ) -> None:
         super().__init__(parent=parent, background="#101719")
         self.index = index
-        self._geometry_signature: tuple[int, int, str] | None = None
+        self._geometry_signature: tuple[object, ...] | None = None
         self._default_levels: tuple[float, float] | None = None
         self._levels = initial_levels
         self._value_range = (0.0, 1.0)
@@ -85,6 +87,7 @@ class ThumbnailPlot(pg.PlotWidget):
         default_levels: tuple[float, float],
         value_range: tuple[float, float],
         plane: str,
+        spacing: tuple[float, float] = (1.0, 1.0),
     ) -> None:
         self._default_levels = default_levels
         self._value_range = (
@@ -94,11 +97,28 @@ class ThumbnailPlot(pg.PlotWidget):
         if self._levels is None:
             self._levels = default_levels
         self.item.setImage(np.asarray(image).T, autoLevels=False, levels=self._levels)
-        invert_x = plane == "Y-Z"
-        signature = (*image.shape, plane)
+        horizontal_spacing, vertical_spacing = map(float, spacing)
+        width, height = image.shape
+        self.item.setRect(
+            QRectF(
+                -0.5 * horizontal_spacing,
+                -0.5 * vertical_spacing,
+                width * horizontal_spacing,
+                height * vertical_spacing,
+            )
+        )
+        # Main spatial views are RAS-oriented and invert X.  The temporal
+        # view does the same only for X-T, so previews must use the same map.
+        invert_x = plane in SPATIAL_PLANES or plane == "X-T"
+        signature = (
+            *image.shape,
+            plane,
+            horizontal_spacing,
+            vertical_spacing,
+        )
         view_box = self.getViewBox()
         view_box.invertX(invert_x)
-        view_box.setAspectLocked(True)
+        view_box.setAspectLocked(plane in SPATIAL_PLANES)
         if signature != self._geometry_signature:
             self._geometry_signature = signature
             self.autoRange(padding=0.02)
@@ -325,19 +345,59 @@ class ImagePreviewStrip(QFrame):
         self,
         images: list[Sequence4D],
         cursor: tuple[int, int, int, int],
+        reference_image: Sequence4D | None = None,
     ) -> None:
         if self._collapsed:
             return
         for index, plot in self._plots.items():
             sequence = images[index]
-            image = self._extract_preview(sequence, cursor, self.plane)
+            mapped_cursor = self._map_cursor(sequence, cursor, reference_image)
+            image = self._extract_preview(sequence, mapped_cursor, self.plane)
             finite = image[np.isfinite(image)]
             if finite.size:
                 low, high = np.percentile(finite, (1.0, 99.0))
                 levels = (float(low), float(high if high != low else low + 1.0))
             else:
                 levels = (0.0, 1.0)
-            plot.set_image(image, levels, self._value_ranges[index], self.plane)
+            plot.set_image(
+                image,
+                levels,
+                self._value_ranges[index],
+                self.plane,
+                self._plane_spacing(sequence, self.plane),
+            )
+
+    @staticmethod
+    def _plane_spacing(sequence: Sequence4D, plane: str) -> tuple[float, float]:
+        if plane in SPATIAL_PLANES:
+            horizontal, vertical = SPATIAL_PLANES[plane]
+            return sequence.spacing_xyz[horizontal], sequence.spacing_xyz[vertical]
+        return sequence.spacing_xyz[TEMPORAL_PLANES[plane]], 1.0
+
+    @staticmethod
+    def _map_cursor(
+        sequence: Sequence4D,
+        cursor: tuple[int, int, int, int],
+        reference_image: Sequence4D | None,
+    ) -> tuple[int, int, int, int]:
+        if reference_image is None or sequence is reference_image:
+            return tuple(int(value) for value in cursor)
+        reference_index = np.asarray(cursor[:3], dtype=float)
+        reference_transform = reference_image.transform
+        world = np.asarray(reference_transform.origin_ras, dtype=float) + (
+            reference_transform.direction_ras
+            @ (reference_index * np.asarray(reference_image.spacing_xyz, dtype=float))
+        )
+        target_transform = sequence.transform
+        basis = target_transform.direction_ras @ np.diag(sequence.spacing_xyz)
+        try:
+            target_index = np.linalg.solve(
+                basis, world - np.asarray(target_transform.origin_ras, dtype=float)
+            )
+            spatial = tuple(int(value) for value in np.rint(target_index))
+        except np.linalg.LinAlgError:
+            spatial = tuple(int(value) for value in cursor[:3])
+        return (*spatial, int(cursor[3]))
 
     @staticmethod
     def _sequence_value_range(sequence: Sequence4D) -> tuple[float, float]:

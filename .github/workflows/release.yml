@@ -135,16 +135,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
       - name: List release assets
         run: find release-assets -maxdepth 1 -type f -printf "%f\n" | sort
+      - name: Extract release notes from changelog
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          version = os.environ["VERSION"]
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"^## {re.escape(version)} - [^\n]+\n+(?P<body>.*?)(?=^## |\Z)",
+              changelog,
+              re.MULTILINE | re.DOTALL,
+          )
+          if match is None:
+              raise SystemExit(f"CHANGELOG.md has no release entry for {version}")
+          pathlib.Path("release-notes.md").write_text(
+              match.group("body").strip() + "\n", encoding="utf-8"
+          )
+          PY
       - uses: softprops/action-gh-release@v3
         with:
           name: SpatioTemporal Labeler ${{ needs.metadata.outputs.version }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: release-assets/*
           fail_on_unmatched_files: true
 

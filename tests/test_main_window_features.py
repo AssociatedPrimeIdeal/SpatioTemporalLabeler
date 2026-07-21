@@ -151,6 +151,64 @@ def test_threshold_apply_creates_one_toggleable_replaceable_special_label():
     finish_window(window, mask)
 
 
+def test_applied_threshold_survives_compatible_image_switch_until_replaced_or_deleted():
+    image_data = np.zeros((7, 7, 1, 2), dtype=np.float32)
+    image_data[3:, :, :, :] = 10.0
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.threshold_panel.set_bounds(5.0, 10.0)
+    window._apply_threshold_mask()
+    applied = window._applied_threshold_mask.copy()
+
+    second = make_sequence(image_data + 20.0)
+    window.images.append(second)
+    window.image_combo.addItem("second image")
+    window.image_combo.setCurrentIndex(1)
+
+    assert np.array_equal(window._applied_threshold_mask, applied)
+    assert window._active_threshold_selection() is not None
+    assert window._applied_threshold_image is image
+
+    window.image_combo.setCurrentIndex(0)
+    window.threshold_panel.set_bounds(0.0, 0.0)
+    window._apply_threshold_mask()
+    assert not np.array_equal(window._applied_threshold_mask, applied)
+
+    window._delete_threshold_mask()
+    assert window._applied_threshold_mask is None
+    finish_window(window, mask)
+
+
+def test_applied_threshold_is_retained_but_inactive_on_an_incompatible_image():
+    image_data = np.zeros((5, 5, 2, 1), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.threshold_panel.set_percent_bounds(0.0, 100.0)
+    window._apply_threshold_mask()
+    applied = window._applied_threshold_mask.copy()
+
+    second = make_sequence(image_data)
+    second.transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(1.0, 1.0, 1.0),
+        origin_ras=(2.0, 0.0, 0.0),
+        direction_ras=np.eye(3),
+    )
+    window.images.append(second)
+    window.image_combo.addItem("incompatible image")
+    window.image_combo.setCurrentIndex(1)
+
+    assert np.array_equal(window._applied_threshold_mask, applied)
+    assert window._active_threshold_selection() is None
+
+    window.image_combo.setCurrentIndex(0)
+    assert window._active_threshold_selection() is not None
+    finish_window(window, mask)
+
+
 def test_held_all_frames_picker_and_region_barrier():
     image_data = np.ones((7, 7, 1, 2), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
@@ -1150,7 +1208,7 @@ def test_brush_updates_all_2d_overlays_and_defers_3d_until_release():
     window._stroke_finished("X-Y", 8, 8)
 
     assert {plane: len(refreshes) for plane, refreshes in overlay_refreshes.items()} == {
-        plane: 3 for plane in overlay_refreshes
+        plane: 2 for plane in overlay_refreshes
     }
     assert full_refreshes == []
     assert len(surface_refreshes) == 1

@@ -931,9 +931,21 @@ class MainWindow(QMainWindow):
         return bool(
             self._applied_threshold_visible
             and image is not None
-            and self._applied_threshold_image is image
+            and self._applied_threshold_matches_active_image()
             and selection is not None
             and selection.shape == image.data.shape
+        )
+
+    def _applied_threshold_matches_active_image(self) -> bool:
+        image = self.active_image
+        source = self._applied_threshold_image
+        selection = self._applied_threshold_mask
+        return bool(
+            image is not None
+            and source is not None
+            and selection is not None
+            and selection.shape == image.data.shape
+            and source.compatible_with(image)
         )
 
     def _active_threshold_frame(self, frame: int) -> np.ndarray | None:
@@ -995,10 +1007,18 @@ class MainWindow(QMainWindow):
         self.image_previews_action.setChecked(not collapsed)
         self.image_previews_action.blockSignals(False)
         if not collapsed:
-            self.image_previews.update_images(self.images, tuple(self.cursor))
+            self.image_previews.update_images(
+                self.images,
+                tuple(self.cursor),
+                reference_image=self.active_image,
+            )
 
     def _preview_plane_changed(self, _plane: str) -> None:
-        self.image_previews.update_images(self.images, tuple(self.cursor))
+        self.image_previews.update_images(
+            self.images,
+            tuple(self.cursor),
+            reference_image=self.active_image,
+        )
 
     def _preview_levels_changed(self, index: int, low: float, high: float) -> None:
         if 0 <= index < len(self.images):
@@ -1016,7 +1036,11 @@ class MainWindow(QMainWindow):
             self._image_levels,
         )
         self.image_previews.set_collapsed(not self.image_previews_action.isChecked(), emit=False)
-        self.image_previews.update_images(self.images, tuple(self.cursor))
+        self.image_previews.update_images(
+            self.images,
+            tuple(self.cursor),
+            reference_image=self.active_image,
+        )
 
     def _view_double_clicked(self, plane: str) -> None:
         if self._pending_contour is not None:
@@ -1097,7 +1121,7 @@ class MainWindow(QMainWindow):
         threshold_present = bool(
             self.active_mask is not None
             and self._applied_threshold_mask is not None
-            and self._applied_threshold_image is self.active_image
+            and self._applied_threshold_matches_active_image()
         )
         self.label_panel.set_labels(
             definitions,
@@ -1337,9 +1361,6 @@ class MainWindow(QMainWindow):
         self._clear_lasso_overlays()
         self._hover_status_context = None
         self.cursor_status.clear()
-        self._applied_threshold_mask = None
-        self._applied_threshold_image = None
-        self._applied_threshold_visible = True
         image = self.active_image
         if image is None:
             self.refresh_views()
@@ -1689,7 +1710,11 @@ class MainWindow(QMainWindow):
         if update_3d:
             self._refresh_3d()
         if self.image_previews.isVisible() and self._maximized_plane is None:
-            self.image_previews.update_images(self.images, tuple(self.cursor))
+            self.image_previews.update_images(
+                self.images,
+                tuple(self.cursor),
+                reference_image=self.active_image,
+            )
 
     def _refresh_3d(
         self,
@@ -1808,6 +1833,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._stroke_before is None or not self._valid_plane_point(plane, h, v):
             return
+        if self._contour and self._contour[-1] == (h, v):
+            return
         if self._stroke_tool in {"contour", "lasso"}:
             if not self._contour or self._contour[-1] != (h, v):
                 self._contour.extend(raster_line(self._contour[-1], (h, v))[1:])
@@ -1858,7 +1885,9 @@ class MainWindow(QMainWindow):
                 4500,
             )
             return
-        if self._valid_plane_point(plane, h, v):
+        if self._valid_plane_point(plane, h, v) and (
+            not self._contour or self._contour[-1] != (h, v)
+        ):
             self._paint_to(plane, h, v)
         self._commit_stroke(mask, before)
 
@@ -2009,21 +2038,20 @@ class MainWindow(QMainWindow):
                 )
                 for frame in self._stroke_frames
             ]
+        operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
+        radius_mm = self.brush_diameter.value() / 2.0
         for plane_data, allowed in zip(planes, allowed_planes):
-            original = plane_data.copy() if allowed is not None else None
             for point in points:
-                operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
                 affected = operation(
                     plane_data,
                     point,
-                    self.brush_diameter.value() / 2.0,
+                    radius_mm,
                     spacing,
                     value,
+                    allowed=allowed,
                 )
                 if affected is not None:
                     self._include_stroke_bounds(plane, affected)
-            if allowed is not None and original is not None:
-                plane_data[~allowed] = original[~allowed]
         if not self._contour or self._contour[-1] != (h, v):
             self._contour.append((h, v))
         self._refresh_stroke_overlays()

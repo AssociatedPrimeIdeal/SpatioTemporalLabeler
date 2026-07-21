@@ -2,6 +2,14 @@
 
 All notable changes to SpatioTemporal Labeler are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Other-image previews now match the main slice view's RAS orientation and physical aspect ratio, and map the active cursor through RAS coordinates when voxel grids differ.
+- Applied threshold masks now persist across active-image switches, remain active on compatible grids, and remain available for restoration after returning from an incompatible grid.
+- Brush updates avoid duplicate release samples and restrict threshold checks to the brush footprint to reduce interaction latency without changing label results.
+
 ## 0.2.7 - 2026-07-20
 
 ### Changed
