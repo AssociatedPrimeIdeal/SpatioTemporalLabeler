@@ -9,6 +9,7 @@ from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
+    QColor,
     QDragEnterEvent,
     QDropEvent,
     QKeyEvent,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QColorDialog,
     QDialog,
     QDockWidget,
     QDoubleSpinBox,
@@ -212,6 +214,7 @@ class MainWindow(QMainWindow):
         self.label_panel.addRequested.connect(self._add_label)
         self.label_panel.deleteRequested.connect(self._delete_label)
         self.label_panel.renameRequested.connect(self._rename_label)
+        self.label_panel.colorRequested.connect(self._change_label_color)
         self.label_panel.opacityChanged.connect(self._label_opacity_changed)
         self.label_panel.thresholdVisibilityChanged.connect(
             self._threshold_visibility_changed
@@ -1483,7 +1486,7 @@ class MainWindow(QMainWindow):
         mask.dirty = True
         self._update_mask_combo_text()
         self._refresh_label_overlays()
-        self.viewer_3d.set_label_opacities(
+        self.viewer_3d.set_label_styles(
             self.active_labels, self._global_label_opacity
         )
 
@@ -1491,7 +1494,7 @@ class MainWindow(QMainWindow):
         self._global_label_opacity = float(np.clip(opacity, 0.0, 1.0))
         self.settings.setValue("labels/global_opacity", self._global_label_opacity)
         self._refresh_label_overlays()
-        self.viewer_3d.set_label_opacities(
+        self.viewer_3d.set_label_styles(
             self.active_labels, self._global_label_opacity
         )
 
@@ -1574,6 +1577,30 @@ class MainWindow(QMainWindow):
             mask.dirty = True
             self._sync_label_panel()
             self._update_mask_combo_text()
+
+    def _change_label_color(self, value: int) -> None:
+        mask = self.active_mask
+        definition = self.active_labels.get(value)
+        if mask is None or definition is None:
+            return
+        color = QColorDialog.getColor(
+            QColor(*definition.color),
+            self,
+            self._tr("label_color"),
+        )
+        if not color.isValid():
+            return
+        rgb = (color.red(), color.green(), color.blue())
+        if rgb == definition.color:
+            return
+        definition.color = rgb
+        mask.dirty = True
+        self._sync_label_panel()
+        self._update_mask_combo_text()
+        self._refresh_label_overlays()
+        self.viewer_3d.set_label_styles(
+            self.active_labels, self._global_label_opacity
+        )
 
     def _extract_spatial(self, sequence: Sequence4D, plane: str) -> np.ndarray:
         return self._extract_spatial_data(sequence.data, plane)

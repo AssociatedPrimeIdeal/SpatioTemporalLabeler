@@ -2,7 +2,7 @@ import numpy as np
 
 from spatiotemporal_labeler.i18n import translate
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
-from spatiotemporal_labeler.model import labels_from_sequence, store_labels
+from spatiotemporal_labeler.model import default_label, labels_from_sequence, store_labels
 
 
 def make_sequence() -> Sequence4D:
@@ -36,3 +36,9 @@ def test_label_definitions_round_trip_through_header():
 def test_english_is_available_as_default_interface_language():
     assert translate("en", "display_image") == "Display image"
     assert translate("zh_CN", "display_image") == "显示图像"
+
+
+def test_default_label_colors_do_not_repeat_in_uint8_range():
+    colors = [default_label(value).color for value in range(1, 256)]
+
+    assert len(set(colors)) == len(colors)

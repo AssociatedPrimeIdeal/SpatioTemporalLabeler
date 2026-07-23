@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
@@ -80,6 +80,42 @@ def test_add_label_suggests_the_first_unused_positive_value(monkeypatch):
     assert suggested_values == [5]
     assert 5 in window.active_labels
     assert window.active_label_value == 5
+    finish_window(window, mask)
+
+
+def test_double_click_label_changes_color_and_refreshes_styles(monkeypatch):
+    image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window._sync_label_panel()
+    item = window.label_panel.list_widget.item(0)
+    requested = []
+    overlay_refreshes = []
+    style_refreshes = []
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QColorDialog.getColor",
+        lambda *_args, **_kwargs: QColor(12, 34, 56),
+    )
+    monkeypatch.setattr(
+        window,
+        "_refresh_label_overlays",
+        lambda: overlay_refreshes.append(True),
+    )
+    monkeypatch.setattr(
+        window.viewer_3d,
+        "set_label_styles",
+        lambda *_args, **_kwargs: style_refreshes.append(True),
+    )
+    window.label_panel.colorRequested.connect(requested.append)
+
+    window.label_panel._color_requested(item)
+
+    assert requested == [1]
+    assert window.active_labels[1].color == (12, 34, 56)
+    assert mask.dirty
+    assert overlay_refreshes == [True]
+    assert style_refreshes == [True]
     finish_window(window, mask)
 
 

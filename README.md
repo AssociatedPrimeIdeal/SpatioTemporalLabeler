@@ -26,7 +26,7 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 - Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width with per-image persistence and live values in other-image previews
 - Optional all-time-frame spatial editing as one undoable operation
 - Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
-- Per-label opacity from the label-row context menu plus a global label opacity control
+- Diverse per-label colors with double-click color editing, row-menu rename/opacity controls, and a global label opacity control
 - Live window level/width sliders in a separate display panel
 - 2D/3D seed region growing that stops at other labels
 - Per-label morphology with physical `mm` radii and `mm³` component volumes
@@ -94,6 +94,7 @@ spatiotemporal-labeler
 | Shift + left drag | Pan a 2D view |
 | Middle drag | Adjust window width horizontally and window level vertically in the dragged view |
 | Double-click an other-image preview | Make that image sequence active |
+| Double-click a label row | Change that label's color |
 | Ctrl + wheel | Zoom a 2D view |
 | Shift + wheel | Change brush or eraser diameter |
 | Wheel in a spatial view | Change its orthogonal slice |

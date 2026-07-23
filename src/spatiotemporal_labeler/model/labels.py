@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import colorsys
 import json
 from dataclasses import asdict, dataclass
 
@@ -9,20 +10,6 @@ from spatiotemporal_labeler.io import Sequence4D
 
 
 LABEL_HEADER_KEY = "SpatioTemporalLabelerLabels"
-DEFAULT_COLORS = (
-    (0, 188, 212),
-    (239, 83, 80),
-    (255, 193, 7),
-    (102, 187, 106),
-    (171, 71, 188),
-    (255, 112, 67),
-    (66, 165, 245),
-    (38, 166, 154),
-    (236, 64, 122),
-    (212, 225, 87),
-    (126, 87, 194),
-    (255, 167, 38),
-)
 
 
 @dataclass
@@ -34,8 +21,30 @@ class LabelDefinition:
     opacity: float = 1.0
 
 
+def _radical_inverse(index: int, base: int) -> float:
+    result = 0.0
+    factor = 1.0 / base
+    while index:
+        index, digit = divmod(index, base)
+        result += digit * factor
+        factor /= base
+    return result
+
+
+def _default_color(value: int) -> tuple[int, int, int]:
+    # Independent low-discrepancy dimensions spread neighboring labels across
+    # hue while also varying saturation and brightness.
+    hue = _radical_inverse(value, 2)
+    saturation = 0.62 + 0.30 * _radical_inverse(value, 3)
+    brightness = 0.74 + 0.24 * _radical_inverse(value, 5)
+    return tuple(
+        int(round(channel * 255.0))
+        for channel in colorsys.hsv_to_rgb(hue, saturation, brightness)
+    )
+
+
 def default_label(value: int) -> LabelDefinition:
-    return LabelDefinition(value, f"Label {value}", DEFAULT_COLORS[(value - 1) % len(DEFAULT_COLORS)])
+    return LabelDefinition(value, f"Label {value}", _default_color(value))
 
 
 def labels_from_sequence(sequence: Sequence4D) -> dict[int, LabelDefinition]:

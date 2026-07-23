@@ -34,6 +34,7 @@ class LabelPanel(QWidget):
     addRequested = Signal()
     deleteRequested = Signal(int)
     renameRequested = Signal(int)
+    colorRequested = Signal(int)
     opacityChanged = Signal(int, float)
     thresholdVisibilityChanged = Signal(bool)
     thresholdDeleteRequested = Signal()
@@ -56,9 +57,9 @@ class LabelPanel(QWidget):
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_widget.currentItemChanged.connect(self._selection_changed)
         self.list_widget.itemChanged.connect(self._item_changed)
-        self.list_widget.itemDoubleClicked.connect(self._rename_requested)
+        self.list_widget.itemDoubleClicked.connect(self._color_requested)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._show_opacity_menu)
+        self.list_widget.customContextMenuRequested.connect(self._show_label_menu)
         layout.addWidget(self.list_widget, 1)
         controls = QHBoxLayout()
         self.add_button = QToolButton()
@@ -197,10 +198,10 @@ class LabelPanel(QWidget):
             else:
                 self.deleteRequested.emit(int(value))
 
-    def _rename_requested(self, item: QListWidgetItem) -> None:
+    def _color_requested(self, item: QListWidgetItem) -> None:
         value = item.data(Qt.ItemDataRole.UserRole)
         if value != THRESHOLD_MASK_ITEM:
-            self.renameRequested.emit(int(value))
+            self.colorRequested.emit(int(value))
 
     def set_global_opacity(self, opacity: float) -> None:
         self.global_opacity.blockSignals(True)
@@ -208,13 +209,19 @@ class LabelPanel(QWidget):
         self.global_opacity.blockSignals(False)
         self.global_opacity_value.setText(f"{self.global_opacity.value()}%")
 
-    def _show_opacity_menu(self, position: Any) -> None:
+    def _show_label_menu(self, position: Any) -> None:
         item = self.list_widget.itemAt(position)
         if item is None:
             return
         value = item.data(Qt.ItemDataRole.UserRole)
         opacity = float(item.data(OPACITY_ROLE) or 0.0)
         menu = QMenu(self)
+        if value != THRESHOLD_MASK_ITEM:
+            rename_action = menu.addAction(translate(self.language, "rename_label"))
+            rename_action.triggered.connect(
+                lambda: self.renameRequested.emit(int(value))
+            )
+            menu.addSeparator()
         action = QWidgetAction(menu)
         control = QWidget(menu)
         layout = QVBoxLayout(control)

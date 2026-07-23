@@ -1092,7 +1092,7 @@ class Mask3DViewer(QWidget):
         self._last_apply_duration_ms = worker_duration_ms + (completed - started) * 1000.0
         self._last_apply_time = completed
 
-    def set_label_opacities(
+    def set_label_styles(
         self,
         labels: dict[int, LabelDefinition],
         global_opacity: float,
@@ -1112,6 +1112,13 @@ class Mask3DViewer(QWidget):
         self._apply_actor_styles()
         if self._initialized and self._rendering_enabled:
             self.vtk_widget.GetRenderWindow().Render()
+
+    def set_label_opacities(
+        self,
+        labels: dict[int, LabelDefinition],
+        global_opacity: float,
+    ) -> None:
+        self.set_label_styles(labels, global_opacity)
 
     def _segment_pipeline(self, definition: LabelDefinition) -> SegmentPipeline:
         existing = self.segment_pipelines.get(definition.value)
