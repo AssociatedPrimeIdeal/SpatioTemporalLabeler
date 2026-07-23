@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.2.9 - 2026-07-23
+
+### Added
+
 - Labels now receive a broad default color sequence that avoids short-palette repetition, and double-clicking a label row opens a color picker that updates both 2D overlays and 3D surfaces.
 
 ### Changed
