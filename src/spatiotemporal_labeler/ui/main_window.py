@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         self._stroke_context: tuple[int, ...] = ()
         self._stroke_bounds: tuple[slice, slice, slice] | None = None
         self._stroke_tool = "brush"
+        self._stroke_label_value = 1
         self._tool_before_grow = "brush"
         self._contour: list[tuple[int, int]] = []
         self._pending_contour: PendingContour | None = None
@@ -1010,18 +1011,10 @@ class MainWindow(QMainWindow):
         self.image_previews_action.setChecked(not collapsed)
         self.image_previews_action.blockSignals(False)
         if not collapsed:
-            self.image_previews.update_images(
-                self.images,
-                tuple(self.cursor),
-                reference_image=self.active_image,
-            )
+            self._update_image_previews()
 
     def _preview_plane_changed(self, _plane: str) -> None:
-        self.image_previews.update_images(
-            self.images,
-            tuple(self.cursor),
-            reference_image=self.active_image,
-        )
+        self._update_image_previews()
 
     def _preview_levels_changed(self, index: int, low: float, high: float) -> None:
         if 0 <= index < len(self.images):
@@ -1039,10 +1032,22 @@ class MainWindow(QMainWindow):
             self._image_levels,
         )
         self.image_previews.set_collapsed(not self.image_previews_action.isChecked(), emit=False)
-        self.image_previews.update_images(
+        self._update_image_previews()
+        self.image_previews.set_label_overlays_visible(not self._labels_hidden_held)
+
+    def _update_image_previews(self, labels_only: bool = False) -> None:
+        method = (
+            self.image_previews.update_label_overlays
+            if labels_only
+            else self.image_previews.update_images
+        )
+        method(
             self.images,
             tuple(self.cursor),
             reference_image=self.active_image,
+            mask=self.active_mask,
+            labels=self.active_labels,
+            global_opacity=self._global_label_opacity,
         )
 
     def _view_double_clicked(self, plane: str) -> None:
@@ -1736,12 +1741,8 @@ class MainWindow(QMainWindow):
         )
         if update_3d:
             self._refresh_3d()
-        if self.image_previews.isVisible() and self._maximized_plane is None:
-            self.image_previews.update_images(
-                self.images,
-                tuple(self.cursor),
-                reference_image=self.active_image,
-            )
+        if self._maximized_plane is None:
+            self._update_image_previews()
 
     def _refresh_3d(
         self,
@@ -1807,6 +1808,8 @@ class MainWindow(QMainWindow):
             self._extract_temporal_line(applied, mode) if applied is not None else None,
             self._applied_threshold_opacity * self._global_label_opacity,
         )
+        if self._maximized_plane is None:
+            self._update_image_previews(labels_only=True)
 
     def _stroke_started(
         self, plane: str, h: int, v: int, temporary_erase: bool = False
@@ -1834,6 +1837,7 @@ class MainWindow(QMainWindow):
         self._clear_lasso_overlays()
         self._stroke_mask = mask
         self._stroke_tool = effective_tool
+        self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = self._threshold_bypass_held
         self._stroke_frame = self.cursor[3]
         self._stroke_context = self._plane_context(plane)
@@ -2037,7 +2041,7 @@ class MainWindow(QMainWindow):
         mask, image = self._stroke_mask, self.active_image
         if mask is None or image is None:
             return
-        value = 0 if self._stroke_tool == "eraser" else self.active_label_value
+        value = 0 if self._stroke_tool == "eraser" else self._stroke_label_value
         start_h, start_v = self._contour[-1] if self._contour else (h, v)
         points = raster_line((start_h, start_v), (h, v))
         spacing = self._editing_spacing(plane, image)
@@ -2064,6 +2068,14 @@ class MainWindow(QMainWindow):
                     self._active_threshold_frame(frame), plane, self._stroke_context
                 )
                 for frame in self._stroke_frames
+            ]
+        if self._stroke_tool == "eraser":
+            allowed_planes = [
+                plane_data == self._stroke_label_value
+                if allowed is None
+                else np.asarray(allowed, dtype=bool)
+                & (plane_data == self._stroke_label_value)
+                for plane_data, allowed in zip(planes, allowed_planes)
             ]
         operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
         radius_mm = self.brush_diameter.value() / 2.0
@@ -2097,6 +2109,8 @@ class MainWindow(QMainWindow):
             self._view_for_plane(plane).set_mask_overlay(
                 mask_plane, labels, global_opacity=self._global_label_opacity
             )
+        if self._maximized_plane is None:
+            self._update_image_previews(labels_only=True)
 
     def _include_stroke_bounds(
         self, plane: str, affected: tuple[slice, slice]
@@ -2212,6 +2226,7 @@ class MainWindow(QMainWindow):
         self._stroke_context = ()
         self._stroke_bounds = None
         self._stroke_tool = self.tool
+        self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = False
         if not keep_contour:
             self._contour = []
@@ -2750,6 +2765,7 @@ class MainWindow(QMainWindow):
         self._labels_hidden_held = enabled
         for view in [*self.slice_views.values(), self.temporal_view]:
             view.set_label_overlays_visible(not enabled)
+        self.image_previews.set_label_overlays_visible(not enabled)
 
     def _brush_settings_changed(self, _value: object = None) -> None:
         if not hasattr(self, "brush_shape"):

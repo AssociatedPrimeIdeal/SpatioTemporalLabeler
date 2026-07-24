@@ -6,9 +6,15 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Other-image previews now show RAS-mapped locator lines and the active label overlay, including nearest-neighbor alignment across different voxel grids.
+
 ### Changed
 
+- Other-image previews now cache unchanged grayscale slices, label uploads, and voxel-grid mappings so cursor and label updates avoid redundant rendering work.
+
 ### Fixed
+
+- Eraser strokes, including right-drag temporary erasing and temporal/all-frame edits, now clear only the selected label and preserve overlapping labels with other values.
 
 ## 0.2.9 - 2026-07-23
 

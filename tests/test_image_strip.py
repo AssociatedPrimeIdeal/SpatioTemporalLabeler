@@ -7,6 +7,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
+from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui.image_strip import ImagePreviewStrip
 
 
@@ -155,6 +156,122 @@ def test_other_image_preview_uses_physical_location_spacing_and_orientation(tmp_
     assert plot.getViewBox().state["xInverted"]
     assert np.isclose(plot.item.transform().m11(), 2.0)
     assert np.isclose(plot.item.transform().m22(), 3.0)
+
+
+def test_other_image_preview_shows_mapped_locator_and_label_overlay(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    images[0].transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(2.0, 3.0, 4.0),
+        origin_ras=(0.0, 0.0, 0.0),
+        direction_ras=np.eye(3),
+    )
+    images[1].transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(2.0, 3.0, 4.0),
+        origin_ras=(0.0, 0.0, 4.0),
+        direction_ras=np.eye(3),
+    )
+    mask = make_sequence(tmp_path / "labels.nrrd")
+    mask.data = np.zeros_like(mask.data, dtype=np.uint8)
+    mask.transform = images[0].transform
+    mask.data[1, 2, 2, 4] = 1
+    labels = {1: default_label(1)}
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+
+    strip.update_images(
+        images,
+        (1, 2, 2, 4),
+        reference_image=images[0],
+        mask=mask,
+        labels=labels,
+        global_opacity=0.75,
+    )
+
+    plot = strip._plots[1]
+    assert np.isclose(float(plot.locator_vertical.value()), 2.0)
+    assert np.isclose(float(plot.locator_horizontal.value()), 6.0)
+    assert plot.mask_item.image[2, 1, 3] > 0
+    assert plot.mask_item.image[0, 0, 3] == 0
+    assert len(strip._mapping_cache) == 1
+
+    strip.set_plane("X-T")
+    strip.update_images(
+        images,
+        (1, 2, 2, 4),
+        reference_image=images[0],
+        mask=mask,
+        labels=labels,
+    )
+
+    assert np.isclose(float(plot.locator_vertical.value()), 2.0)
+    assert np.isclose(float(plot.locator_horizontal.value()), 4.0)
+    assert plot.mask_item.image[4, 1, 3] > 0
+
+
+def test_other_image_preview_skips_unchanged_slice_and_overlay_uploads(
+    tmp_path, monkeypatch
+):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    mask = make_sequence(tmp_path / "labels.nrrd")
+    mask.data = np.zeros_like(mask.data, dtype=np.uint8)
+    mask.data[1, 1, 1, 2] = 1
+    labels = {1: default_label(1)}
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+    strip.update_images(
+        images,
+        (1, 1, 1, 2),
+        reference_image=images[0],
+        mask=mask,
+        labels=labels,
+    )
+    plot = strip._plots[1]
+    image_updates = []
+    overlay_updates = []
+    original_set_image = plot.set_image
+    original_overlay_set_image = plot.mask_item.setImage
+
+    def record_image_update(*args, **kwargs):
+        image_updates.append(None)
+        return original_set_image(*args, **kwargs)
+
+    def record_overlay_update(*args, **kwargs):
+        overlay_updates.append(None)
+        return original_overlay_set_image(*args, **kwargs)
+
+    monkeypatch.setattr(plot, "set_image", record_image_update)
+    monkeypatch.setattr(plot.mask_item, "setImage", record_overlay_update)
+
+    strip.update_images(
+        images,
+        (2, 3, 1, 2),
+        reference_image=images[0],
+        mask=mask,
+        labels=labels,
+    )
+
+    assert image_updates == []
+    assert overlay_updates == []
+    assert float(plot.locator_vertical.value()) == 2.0
+    assert float(plot.locator_horizontal.value()) == 3.0
+
+    mask.data[2, 3, 1, 2] = 1
+    strip.update_label_overlays(
+        images,
+        (2, 3, 1, 2),
+        images[0],
+        mask,
+        labels,
+        1.0,
+    )
+
+    assert overlay_updates == [None]
 
 
 def test_other_image_preview_ctrl_wheel_zoom_survives_image_refresh(tmp_path):

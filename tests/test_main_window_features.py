@@ -144,6 +144,50 @@ def test_threshold_constrains_brush_and_bypass_ignores_it():
     finish_window(window, mask)
 
 
+def test_eraser_only_clears_the_active_label_across_all_time_frames():
+    image_data = np.ones((7, 7, 1, 2), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[3, 3, 0, :] = 1
+    mask_data[4, 3, 0, :] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    original = mask.data.copy()
+    window.active_label_value = 1
+    window.brush_shape.setCurrentIndex(window.brush_shape.findData("square"))
+    window.brush_diameter.setValue(3.0)
+    window.all_frames_toggle.setChecked(True)
+    window._set_tool("eraser")
+
+    window._stroke_started("X-Y", 3, 3)
+    window._stroke_finished("X-Y", 3, 3)
+
+    assert np.all(mask.data[3, 3, 0, :] == 0)
+    assert np.all(mask.data[4, 3, 0, :] == 2)
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_temporary_eraser_only_clears_the_active_label_in_a_temporal_view():
+    image_data = np.ones((7, 7, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[3, 3, 0, :] = 1
+    mask_data[4, 3, 0, 1] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    window.cursor = [3, 3, 0, 1]
+    window.active_label_value = 1
+    window.brush_shape.setCurrentIndex(window.brush_shape.findData("square"))
+    window.brush_diameter.setValue(3.0)
+
+    window._stroke_started("X-T", 3, 1, temporary_erase=True)
+    window._stroke_finished("X-T", 3, 1, _temporary_erase=True)
+
+    assert mask.data[3, 3, 0, 1] == 0
+    assert mask.data[4, 3, 0, 1] == 2
+    assert window.tool == "brush"
+    finish_window(window, mask)
+
+
 def test_threshold_apply_creates_one_toggleable_replaceable_special_label():
     image_data = np.zeros((7, 7, 1, 2), dtype=np.float32)
     image_data[3:, :, :, :] = 10.0
@@ -884,6 +928,32 @@ def test_window_levels_follow_each_image_between_main_view_and_preview():
     assert window._levels == first_levels
     window.image_combo.setCurrentIndex(1)
     assert window._levels == (1075.0, 1125.0)
+    finish_window(window, mask)
+
+
+def test_main_window_syncs_active_labels_and_hide_state_to_other_image_preview():
+    image_data = np.ones((5, 6, 2, 2), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[2, 3, 1, 0] = 1
+    window, _first_image, mask = make_window(image_data, mask_data)
+    window.cursor = [2, 3, 1, 0]
+    second_image = make_sequence(image_data + 10.0)
+    window.images.append(second_image)
+    window.image_combo.addItem("second image")
+
+    window._rebuild_image_previews()
+
+    plot = window.image_previews._plots[1]
+    assert plot.mask_item.image[3, 2, 3] > 0
+    plot.set_mask_overlay(None, None, 1.0)
+    assert plot.mask_item.image is None
+    assert not window.isVisible()
+    window.refresh_views()
+    assert plot.mask_item.image[3, 2, 3] > 0
+    window._set_labels_hidden_held(True)
+    assert not plot.mask_item.isVisible()
+    window._set_labels_hidden_held(False)
+    assert plot.mask_item.isVisible()
     finish_window(window, mask)
 
 
