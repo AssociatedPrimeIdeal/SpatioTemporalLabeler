@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.2.10 - 2026-07-24
+
+### Added
+
 - Other-image previews now show RAS-mapped locator lines and the active label overlay, including nearest-neighbor alignment across different voxel grids.
 
 ### Changed
