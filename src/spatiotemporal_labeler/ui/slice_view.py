@@ -159,6 +159,7 @@ class FootprintOverlay:
         effective_tool = "eraser" if self.temporary_erase else self.tool
         color = {
             "brush": "#39d5c5",
+            "snap_brush": "#52b788",
             "eraser": "#ff6b64",
             "lasso": "#ffc857",
             "contour": "#ffd166",

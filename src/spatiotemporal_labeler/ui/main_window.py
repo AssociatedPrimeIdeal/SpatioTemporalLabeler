@@ -62,10 +62,12 @@ from spatiotemporal_labeler.tools import (
     automatic_thresholds,
     build_threshold_mask,
     connected_seed_region,
+    find_similar_patch_center,
     fill_polygon,
     interpolate_label_frames,
     polygon_selection,
     raster_line,
+    strongest_signal_frame,
     transform_selected_labels,
 )
 
@@ -81,6 +83,7 @@ from .region_grow_panel import RegionGrowPanel
 from .render_settings import RenderSettings
 from .settings_dialog import DEFAULT_SHORTCUTS, SettingsDialog
 from .slice_view import SliceView, TemporalView
+from .snap_brush_panel import SnapBrushPanel
 from .threshold_panel import ThresholdPanel
 from .viewer_3d import Mask3DViewer
 from .window_level_panel import WindowLevelPanel
@@ -383,6 +386,15 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.grow_dock)
         self.grow_dock.hide()
 
+        self.snap_brush_dock = QDockWidget(self)
+        self.snap_brush_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.snap_brush_panel = SnapBrushPanel()
+        self.snap_brush_dock.setWidget(self.snap_brush_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.snap_brush_dock)
+        self.snap_brush_dock.hide()
+
         self.lasso_dock = QDockWidget(self)
         self.lasso_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -422,7 +434,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.display_dock)
         self.display_dock.hide()
         self.tabifyDockWidget(self.threshold_dock, self.grow_dock)
-        self.tabifyDockWidget(self.grow_dock, self.lasso_dock)
+        self.tabifyDockWidget(self.grow_dock, self.snap_brush_dock)
+        self.tabifyDockWidget(self.snap_brush_dock, self.lasso_dock)
         self.tabifyDockWidget(self.lasso_dock, self.morphology_dock)
         self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
         self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
@@ -471,10 +484,19 @@ class MainWindow(QMainWindow):
         tool_group = QActionGroup(self)
         tool_group.setExclusive(True)
         self.tool_actions: dict[str, QAction] = {}
-        for key in ("brush", "eraser", "lasso", "contour", "picker", "grow"):
+        for key in (
+            "brush",
+            "snap_brush",
+            "eraser",
+            "lasso",
+            "contour",
+            "picker",
+            "grow",
+        ):
             action = QAction("", self, checkable=True)
             icon_color = {
                 "brush": "#087f8c",
+                "snap_brush": "#25834f",
                 "eraser": "#d95252",
                 "lasso": "#b66a15",
                 "contour": "#b77a00",
@@ -610,11 +632,13 @@ class MainWindow(QMainWindow):
             QToolButton:pressed { background: #cfdee0; }
             QToolButton:checked { background: #c3e4e6; border-color: #16808a; color: #083f45; }
             QToolButton:disabled { color: #98a4a6; }
-            QComboBox, QDoubleSpinBox {
+            QComboBox, QDoubleSpinBox, QSpinBox {
                 background: #ffffff; border: 1px solid #a9b9bc; border-radius: 3px;
                 min-height: 22px; padding: 3px 7px;
             }
-            QComboBox:focus, QDoubleSpinBox:focus { border-color: #168894; }
+            QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus {
+                border-color: #168894;
+            }
             QSlider::groove:horizontal { height: 6px; background: #b8c4c6; border-radius: 3px; }
             QSlider::sub-page:horizontal { background: #168894; border-radius: 3px; }
             QSlider::handle:horizontal {
@@ -692,6 +716,7 @@ class MainWindow(QMainWindow):
         self.image_previews_action.setText(self._tr("image_previews"))
         self.threshold_dock.setWindowTitle(self._tr("threshold_dock"))
         self.grow_dock.setWindowTitle(self._tr("grow_dock"))
+        self.snap_brush_dock.setWindowTitle(self._tr("snap_brush_dock"))
         self.lasso_dock.setWindowTitle(self._tr("lasso_dock"))
         self.morphology_dock.setWindowTitle(self._tr("morphology_dock"))
         self.morphology_action.setText(self._tr("morphology"))
@@ -706,6 +731,7 @@ class MainWindow(QMainWindow):
         self.label_panel.set_language(self.language)
         self.threshold_panel.set_language(self.language)
         self.grow_panel.set_language(self.language)
+        self.snap_brush_panel.set_language(self.language)
         self.lasso_panel.set_language(self.language)
         self.morphology_panel.set_language(self.language)
         self.interpolation_panel.set_language(self.language)
@@ -740,7 +766,14 @@ class MainWindow(QMainWindow):
     def _apply_shortcuts(self) -> None:
         if not hasattr(self, "tool_actions"):
             return
-        for key in ("brush", "eraser", "lasso", "contour", "grow"):
+        for key in (
+            "brush",
+            "snap_brush",
+            "eraser",
+            "lasso",
+            "contour",
+            "grow",
+        ):
             self.tool_actions[key].setShortcut(QKeySequence(self.shortcuts.get(key, "")))
         self.tool_actions["picker"].setShortcut(QKeySequence())
 
@@ -1373,7 +1406,10 @@ class MainWindow(QMainWindow):
         if image is None:
             self.refresh_views()
             return
-        self.cursor = [max(0, size // 2) for size in image.data.shape]
+        self.cursor = [
+            *(max(0, size // 2) for size in image.data.shape[:3]),
+            strongest_signal_frame(image.data),
+        ]
         sample = image.data.flat[:: max(1, image.data.size // 500_000)]
         finite = sample[np.isfinite(sample)]
         if finite.size:
@@ -1845,10 +1881,8 @@ class MainWindow(QMainWindow):
         if plane in TEMPORAL_AXES:
             self._stroke_frames = tuple(range(mask.frame_count))
         else:
-            self._stroke_frames = (
-                tuple(range(mask.frame_count))
-                if self.all_frames_toggle.isChecked() or self._all_frames_held
-                else (self._stroke_frame,)
+            self._stroke_frames = self._spatial_edit_frames(
+                mask, effective_tool, self._stroke_frame
             )
         self._stroke_before = capture_frames(mask, self._stroke_frames)
         self._contour = [(h, v)]
@@ -1962,10 +1996,8 @@ class MainWindow(QMainWindow):
             return
         self._lasso_3d_mask = mask
         self._lasso_3d_focus_frame = self.cursor[3]
-        self._lasso_3d_frames = (
-            tuple(range(mask.frame_count))
-            if self.all_frames_toggle.isChecked() or self._all_frames_held
-            else (self.cursor[3],)
+        self._lasso_3d_frames = self._spatial_edit_frames(
+            mask, "lasso", self._lasso_3d_focus_frame
         )
         self._lasso_3d_before = capture_frames(mask, self._lasso_3d_frames)
 
@@ -2079,11 +2111,73 @@ class MainWindow(QMainWindow):
             ]
         operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
         radius_mm = self.brush_diameter.value() / 2.0
-        for plane_data, allowed in zip(planes, allowed_planes):
+        snap_enabled = self._stroke_tool == "snap_brush" and plane in PLANE_AXES
+        if snap_enabled:
+            reference_image_plane = self._array_plane(
+                image.data,
+                plane,
+                self._stroke_frame,
+                self._stroke_context,
+            )
+            target_image_planes = [
+                self._array_plane(image.data, plane, frame, self._stroke_context)
+                for frame in self._stroke_frames
+            ]
+            patch_radius = tuple(
+                max(
+                    1,
+                    int(
+                        np.ceil(
+                            self.snap_brush_panel.patch_radius.value()
+                            / axis_spacing
+                        )
+                    ),
+                )
+                for axis_spacing in spacing
+            )
+            search_radius = tuple(
+                max(
+                    0,
+                    int(
+                        np.ceil(
+                            self.snap_brush_panel.search_radius.value()
+                            / axis_spacing
+                        )
+                    ),
+                )
+                for axis_spacing in spacing
+            )
+            minimum_similarity = self.snap_brush_panel.minimum_similarity.value() / 100.0
+        else:
+            reference_image_plane = None
+            target_image_planes = [None] * len(planes)
+            patch_radius = (0, 0)
+            search_radius = (0, 0)
+            minimum_similarity = -1.0
+        for frame, plane_data, allowed, target_image_plane in zip(
+            self._stroke_frames, planes, allowed_planes, target_image_planes
+        ):
             for point in points:
+                target_point = point
+                if (
+                    reference_image_plane is not None
+                    and target_image_plane is not None
+                    and frame != self._stroke_frame
+                ):
+                    matched_point = find_similar_patch_center(
+                        reference_image_plane,
+                        target_image_plane,
+                        point,
+                        patch_radius,
+                        search_radius,
+                        minimum_similarity,
+                    )
+                    if matched_point is None:
+                        continue
+                    target_point = matched_point
                 affected = operation(
                     plane_data,
-                    point,
+                    target_point,
                     radius_mm,
                     spacing,
                     value,
@@ -2230,6 +2324,22 @@ class MainWindow(QMainWindow):
         self._stroke_ignore_threshold = False
         if not keep_contour:
             self._contour = []
+
+    def _spatial_edit_frames(
+        self, mask: Sequence4D, tool: str, focus_frame: int
+    ) -> tuple[int, ...]:
+        if self.all_frames_toggle.isChecked() or self._all_frames_held:
+            return tuple(range(mask.frame_count))
+        if tool == "snap_brush":
+            frame_radius = min(
+                self.snap_brush_panel.frame_radius.value(), mask.frame_count - 1
+            )
+            frames = {
+                (focus_frame + offset) % mask.frame_count
+                for offset in range(-frame_radius, frame_radius + 1)
+            }
+            return tuple(sorted(frames))
+        return (focus_frame,)
 
     def _cancel_pending_contour(self, silent: bool = False) -> None:
         if self._pending_contour is None:
@@ -2742,6 +2852,11 @@ class MainWindow(QMainWindow):
             self.grow_dock.raise_()
         elif previous == "grow":
             self.grow_dock.hide()
+        if name == "snap_brush":
+            self.snap_brush_dock.show()
+            self.snap_brush_dock.raise_()
+        elif previous == "snap_brush":
+            self.snap_brush_dock.hide()
         if name == "lasso":
             self.lasso_dock.show()
             self.lasso_dock.raise_()
@@ -2812,6 +2927,7 @@ class MainWindow(QMainWindow):
         self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
         self.threshold_mask_action.setEnabled(has_image)
         self.grow_panel.setEnabled(has_image and has_mask)
+        self.snap_brush_panel.setEnabled(has_image and has_mask and has_label)
         self.lasso_panel.setEnabled(has_mask and has_label)
         self.morphology_panel.setEnabled(has_mask and has_label)
         self.morphology_action.setEnabled(has_mask and has_label)

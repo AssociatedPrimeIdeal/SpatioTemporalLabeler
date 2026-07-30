@@ -16,11 +16,13 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 ## Features
 
 - Linked X-Y, X-Z, Y-Z, and selectable X-T/Y-T/Z-T views
+- Automatic initial display of the frame with the strongest aggregate finite signal
 - Hover status with voxel indices, RAS coordinates, image intensity, and label value
 - Coalesced all-label 3D updates during time navigation
 - Multiple image sequences, label sequences, and integer labels
 - Unified image/label import classification, drag-and-drop, and resizable selectable-plane previews for other loaded images
 - Physical round or square brush and eraser footprints
+- Adjacent-frame snap brush with cyclic temporal neighbors, configurable local image-similarity matching, and optional all-frame scope
 - Immediate 2D/3D scissors lasso for label erase or replacement, including all-time-frame edits
 - Closed-contour raster drawing with interior fill
 - Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width with per-image persistence and live values in other-image previews
@@ -75,7 +77,7 @@ spatiotemporal-labeler examples/sample-data
 ```
 
 When a directory is provided, every direct `.nrrd`, `.nii`, and `.nii.gz` file is loaded. Files whose names contain `seg`, `mask`, or `label` are opened as label sequences; the remaining files are opened as image sequences.
-When present, `pcmra.seq.nrrd` is selected as the initial display image and `seg.seq.nrrd` as the initial label sequence.
+When present, `pcmra.seq.nrrd` is selected as the initial display image and `seg.seq.nrrd` as the initial label sequence. A 4D image initially opens on the earliest frame with the largest whole-frame sum of absolute finite voxel intensities; `NaN` and infinite values are ignored.
 
 You can also launch without arguments and load or drop NRRD/NIfTI files:
 
@@ -100,7 +102,7 @@ spatiotemporal-labeler
 | Wheel in a spatial view | Change its orthogonal slice |
 | Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
-| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or seed grow |
+| `B`, `N`, `E`, `S`, `L`, `G` | Brush, adjacent-frame snap brush, eraser, scissors lasso, contour, or seed grow |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |
 | Hold `H` | Temporarily hide all 2D label overlays |
 | `R` | Reset 2D zoom and pan, or auto-window and reset the hovered other-image preview |
@@ -110,7 +112,9 @@ spatiotemporal-labeler
 | `Ctrl+Z`, `Ctrl+Y` | Undo or redo |
 | `Esc` | Cancel a pending contour or active lasso preview |
 
-Enable **All time frames** to repeat one spatial gesture at the same X/Y/Z coordinates in every frame. Temporal-view edits always affect the exact time pixels drawn.
+Enable **All time frames** to apply one spatial gesture in every frame. Ordinary tools repeat the same X/Y/Z coordinates; the adjacent-frame snap brush searches locally for the corresponding image position. Temporal-view edits always affect the exact time pixels drawn.
+
+The snap brush compares a reference patch `R` with each candidate patch `C` using zero-mean normalized cross-correlation: `sum((R - mean(R)) * (C - mean(C))) / sqrt(sum((R - mean(R))^2) * sum((C - mean(C))^2))`. The highest score wins, with the smallest displacement breaking ties. Its tool panel controls the number of frames on each side, patch radius in `mm`, search radius in `mm`, and minimum accepted similarity. Time is cyclic, so the frames before the first and after the last wrap to the opposite end. A target frame below the minimum similarity is skipped.
 
 ## Data Contract
 

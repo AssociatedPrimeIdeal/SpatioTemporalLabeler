@@ -6,9 +6,15 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added an adjacent-frame snap brush that follows local image appearance through cyclic temporal neighbors, exposes frame count, patch radius, search radius, and minimum-similarity controls, expands to every frame under all-frame editing, and records each stroke as one undoable edit.
+
 ### Changed
 
+- 4D image sequences now initially display their strongest aggregate-signal frame instead of the middle frame, using finite absolute voxel intensities with stable earliest-frame tie breaking.
+
 ### Fixed
+
+- Unified spatial editing scope so checked all-frame editing consistently covers every frame for brushes, contours, and 2D/3D scissors operations.
 
 ## 0.2.10 - 2026-07-24
 

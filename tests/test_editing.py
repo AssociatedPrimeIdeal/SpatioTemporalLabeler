@@ -3,6 +3,7 @@ import numpy as np
 from spatiotemporal_labeler.tools import (
     apply_disk,
     apply_square,
+    find_similar_patch_center,
     fill_polygon,
     polygon_selection,
     raster_line,
@@ -86,6 +87,42 @@ def test_raster_line_contains_each_pixel_without_gaps():
         max(abs(next_h - h), abs(next_v - v)) == 1
         for (h, v), (next_h, next_v) in zip(points, points[1:])
     )
+
+
+def test_similar_patch_center_tracks_a_local_shift_and_prefers_nearest_ties():
+    reference = np.zeros((15, 15), dtype=np.float32)
+    target = np.zeros_like(reference)
+    pattern = np.asarray(
+        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
+        dtype=np.float32,
+    )
+    reference[6:9, 6:9] = pattern
+    target[9:12, 3:6] = pattern
+
+    matched = find_similar_patch_center(
+        reference,
+        target,
+        (7, 7),
+        patch_radius=(1, 1),
+        search_radius=(5, 5),
+    )
+
+    assert matched == (10, 4)
+    assert find_similar_patch_center(
+        reference,
+        target,
+        (7, 7),
+        patch_radius=(1, 1),
+        search_radius=(5, 5),
+        minimum_similarity=1.01,
+    ) is None
+    assert find_similar_patch_center(
+        np.ones((7, 7)),
+        np.ones((7, 7)),
+        (3, 3),
+        patch_radius=(1, 1),
+        search_radius=(2, 2),
+    ) == (3, 3)
 
 
 def test_lasso_selection_is_implicitly_closed_and_transforms_only_source_label():

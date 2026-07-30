@@ -53,6 +53,18 @@ def finish_window(window, mask):
     window.deleteLater()
 
 
+def test_active_image_starts_on_the_strongest_signal_frame():
+    image_data = np.zeros((5, 4, 3, 4), dtype=np.float32)
+    image_data[..., 1] = 2.0
+    image_data[..., 3] = -4.0
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+
+    assert window.cursor == [2, 2, 1, 3]
+    finish_window(window, mask)
+
+
 def test_add_label_suggests_the_first_unused_positive_value(monkeypatch):
     image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
     window, _image, mask = make_window(
@@ -165,6 +177,94 @@ def test_eraser_only_clears_the_active_label_across_all_time_frames():
     assert len(window._undo_stack) == 1
     window.undo()
     assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_adjacent_frame_snap_brush_tracks_local_image_motion_and_all_frame_scope():
+    image_data = np.zeros((19, 19, 1, 5), dtype=np.float32)
+    centers = ((4, 7), (6, 8), (8, 9), (10, 10), (12, 11))
+    pattern = np.asarray(
+        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
+        dtype=np.float32,
+    )
+    for frame, (h, v) in enumerate(centers):
+        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [8, 9, 0, 2]
+    window.brush_diameter.setValue(1.0)
+    window._set_tool("snap_brush")
+    assert not window.snap_brush_dock.isHidden()
+    assert window.snap_brush_panel.frame_radius.value() == 1
+    assert window.snap_brush_panel.patch_radius.value() == 3.0
+    assert window.snap_brush_panel.search_radius.value() == 10.0
+    assert window.snap_brush_panel.minimum_similarity.value() == 50.0
+    assert window._spatial_edit_frames(mask, "snap_brush", 0) == (0, 1, 4)
+    assert window._spatial_edit_frames(mask, "snap_brush", 4) == (0, 3, 4)
+    window.snap_brush_panel.frame_radius.setValue(2)
+    assert window._spatial_edit_frames(mask, "snap_brush", 2) == (0, 1, 2, 3, 4)
+    window.snap_brush_panel.frame_radius.setValue(1)
+
+    window.snap_brush_panel.search_radius.setValue(1.0)
+    window.snap_brush_panel.minimum_similarity.setValue(100.0)
+    window._stroke_started("X-Y", 8, 9)
+    window._stroke_finished("X-Y", 8, 9)
+
+    assert mask.data[8, 9, 0, 2] == 1
+    assert mask.data[6, 8, 0, 1] == 0
+    assert mask.data[10, 10, 0, 3] == 0
+    window.undo()
+    assert not np.any(mask.data)
+    window.snap_brush_panel.search_radius.setValue(10.0)
+    window.snap_brush_panel.minimum_similarity.setValue(50.0)
+
+    window._stroke_started("X-Y", 8, 9)
+    window._stroke_finished("X-Y", 8, 9)
+
+    assert tuple(mask.data[h, v, 0, frame] for frame, (h, v) in enumerate(centers)) == (
+        0,
+        1,
+        1,
+        1,
+        0,
+    )
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert not np.any(mask.data)
+
+    window.all_frames_toggle.setChecked(True)
+    window._stroke_started("X-Y", 8, 9)
+    window._stroke_finished("X-Y", 8, 9)
+
+    assert all(mask.data[h, v, 0, frame] == 1 for frame, (h, v) in enumerate(centers))
+    assert len(window._undo_stack) == 1
+    window._set_tool("brush")
+    assert window.snap_brush_dock.isHidden()
+    finish_window(window, mask)
+
+
+def test_adjacent_frame_snap_brush_wraps_between_first_and_last_frames():
+    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
+    centers = ((7, 7), (9, 7), (5, 7))
+    pattern = np.asarray(
+        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
+        dtype=np.float32,
+    )
+    for frame, (h, v) in enumerate(centers):
+        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [7, 7, 0, 0]
+    window.brush_diameter.setValue(1.0)
+    window._set_tool("snap_brush")
+
+    window._stroke_started("X-Y", 7, 7)
+    window._stroke_finished("X-Y", 7, 7)
+
+    assert all(mask.data[h, v, 0, frame] == 1 for frame, (h, v) in enumerate(centers))
+    assert len(window._undo_stack) == 1
     finish_window(window, mask)
 
 
@@ -336,6 +436,28 @@ def test_2d_lasso_erase_respects_all_time_frames_and_is_one_undo():
     assert len(window._undo_stack) == 1
     window.undo()
     assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_contour_fill_respects_all_time_frames_and_is_one_undo():
+    image_data = np.ones((9, 9, 1, 3), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window._set_tool("contour")
+    window.all_frames_toggle.setChecked(True)
+
+    window._stroke_started("X-Y", 2, 2)
+    window._stroke_moved("X-Y", 6, 2)
+    window._stroke_moved("X-Y", 6, 6)
+    window._stroke_finished("X-Y", 2, 6)
+    window._confirm_contour("X-Y")
+
+    assert np.all(mask.data[4, 4, 0, :] == 1)
+    assert np.all(mask.data[1, 1, 0, :] == 0)
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert not np.any(mask.data)
     finish_window(window, mask)
 
 

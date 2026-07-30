@@ -3,12 +3,14 @@
 from .editing import (
     apply_disk,
     apply_square,
+    find_similar_patch_center,
     fill_polygon,
     polygon_selection,
     raster_line,
     transform_selected_labels,
 )
 from .interpolation import interpolate_label_frames
+from .intensity import strongest_signal_frame
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
     apply_label_morphology,
@@ -35,11 +37,13 @@ __all__ = [
     "automatic_thresholds",
     "build_threshold_mask",
     "connected_seed_region",
+    "find_similar_patch_center",
     "fill_polygon",
     "interpolate_label_frames",
     "kittler_threshold",
     "remove_small_components",
     "polygon_selection",
     "raster_line",
+    "strongest_signal_frame",
     "transform_selected_labels",
 ]

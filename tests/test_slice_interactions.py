@@ -121,6 +121,7 @@ def test_all_toolbar_icons_render_without_error():
         "undo",
         "redo",
         "brush",
+        "snap_brush",
         "eraser",
         "lasso",
         "contour",
