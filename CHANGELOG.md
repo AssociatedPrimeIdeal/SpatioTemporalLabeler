@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.0 - 2026-07-31
+
+### Added
+
 - Added an adjacent-frame snap brush that follows local image appearance through cyclic temporal neighbors, exposes frame count, patch radius, search radius, and minimum-similarity controls, expands to every frame under all-frame editing, and records each stroke as one undoable edit.
 
 ### Changed
