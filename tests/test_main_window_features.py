@@ -180,235 +180,6 @@ def test_eraser_only_clears_the_active_label_across_all_time_frames():
     finish_window(window, mask)
 
 
-def test_adjacent_frame_snap_brush_tracks_local_image_motion_and_all_frame_scope():
-    image_data = np.zeros((19, 19, 1, 5), dtype=np.float32)
-    centers = ((4, 7), (6, 8), (8, 9), (10, 10), (12, 11))
-    pattern = np.asarray(
-        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
-        dtype=np.float32,
-    )
-    for frame, (h, v) in enumerate(centers):
-        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
-    window, _image, mask = make_window(
-        image_data, np.zeros(image_data.shape, dtype=np.uint8)
-    )
-    window.cursor = [8, 9, 0, 2]
-    window.brush_diameter.setValue(1.0)
-    window._set_tool("snap_brush")
-    assert not window.snap_brush_dock.isHidden()
-    assert window.snap_brush_panel.frame_radius.value() == 1
-    assert window.snap_brush_panel.patch_radius.value() == 3
-    assert window.snap_brush_panel.patch_radius.suffix() == " px"
-    assert window.snap_brush_panel.search_radius.value() == 5
-    assert window.snap_brush_panel.search_radius.suffix() == " px"
-    assert window.snap_brush_panel.minimum_similarity.value() == 50.0
-    assert window.snap_brush_panel.all_frames.isChecked()
-    assert not window.snap_brush_panel.frame_radius.isEnabled()
-    assert window._spatial_edit_frames(mask, "snap_brush", 0) == (0, 1, 2, 3, 4)
-    assert window._spatial_edit_frames(mask, "snap_brush", 4) == (0, 1, 2, 3, 4)
-    window.snap_brush_panel.all_frames.setChecked(False)
-    assert window.snap_brush_panel.frame_radius.isEnabled()
-    assert window._spatial_edit_frames(mask, "snap_brush", 0) == (0, 1, 4)
-    assert window._spatial_edit_frames(mask, "snap_brush", 4) == (0, 3, 4)
-    window.snap_brush_panel.frame_radius.setValue(2)
-    assert window._spatial_edit_frames(mask, "snap_brush", 2) == (0, 1, 2, 3, 4)
-    window.snap_brush_panel.frame_radius.setValue(1)
-
-    window.snap_brush_panel.search_radius.setValue(1)
-    window.snap_brush_panel.minimum_similarity.setValue(100.0)
-    window._stroke_started("X-Y", 8, 9)
-    window._stroke_finished("X-Y", 8, 9)
-
-    assert mask.data[8, 9, 0, 2] == 1
-    assert mask.data[6, 8, 0, 1] == 0
-    assert mask.data[10, 10, 0, 3] == 0
-    window.undo()
-    assert not np.any(mask.data)
-    window.snap_brush_panel.search_radius.setValue(5)
-    window.snap_brush_panel.minimum_similarity.setValue(50.0)
-
-    window._stroke_started("X-Y", 8, 9)
-    window._stroke_finished("X-Y", 8, 9)
-
-    assert tuple(mask.data[h, v, 0, frame] for frame, (h, v) in enumerate(centers)) == (
-        0,
-        1,
-        1,
-        1,
-        0,
-    )
-    assert len(window._undo_stack) == 1
-    window.undo()
-    assert not np.any(mask.data)
-
-    window.all_frames_toggle.setChecked(True)
-    window._stroke_started("X-Y", 8, 9)
-    window._stroke_finished("X-Y", 8, 9)
-
-    assert all(mask.data[h, v, 0, frame] == 1 for frame, (h, v) in enumerate(centers))
-    assert len(window._undo_stack) == 1
-    window._set_tool("brush")
-    assert window.snap_brush_dock.isHidden()
-    finish_window(window, mask)
-
-
-def test_snap_brush_matches_once_per_mouse_event_and_interpolates_target_strokes(
-    monkeypatch,
-):
-    image_data = np.ones((15, 9, 1, 3), dtype=np.float32)
-    window, _image, mask = make_window(
-        image_data,
-        np.zeros(image_data.shape, dtype=np.uint8),
-        spacing_xyz=(2.5, 1.0, 1.0),
-    )
-    window.cursor = [2, 4, 0, 1]
-    window.brush_diameter.setValue(1.0)
-    window._set_tool("snap_brush")
-    matches = []
-    matching_parameters = []
-
-    def match_once(_reference, _target, center, *_args, **_kwargs):
-        matches.append(center)
-        matching_parameters.append((_args[0], _args[1], _kwargs))
-        return center
-
-    monkeypatch.setattr(
-        "spatiotemporal_labeler.ui.main_window.find_similar_patch_center",
-        match_once,
-    )
-
-    window._stroke_started("X-Y", 2, 4)
-    window._stroke_moved("X-Y", 10, 4)
-    window._stroke_finished("X-Y", 10, 4)
-
-    assert matches == [(2, 4), (2, 4), (10, 4), (10, 4)]
-    assert all(
-        patch_radius == (3, 3)
-        and search_radius == (5, 5)
-        and "spacing" not in keyword_arguments
-        for patch_radius, search_radius, keyword_arguments in matching_parameters
-    )
-    assert np.all(mask.data[2:11, 4, 0, :] == 1)
-    finish_window(window, mask)
-
-
-def test_snap_brush_matches_and_paints_only_inside_the_applied_threshold():
-    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
-    centers = ((5, 7), (7, 7), (9, 7))
-    pattern = np.asarray(
-        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
-        dtype=np.float32,
-    )
-    for frame, (h, v) in enumerate(centers):
-        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
-    window, image, mask = make_window(
-        image_data, np.zeros(image_data.shape, dtype=np.uint8)
-    )
-    threshold = np.zeros(image_data.shape, dtype=bool)
-    threshold[5, 7, 0, 0] = True
-    threshold[7, 7, 0, 1] = True
-    window._applied_threshold_mask = threshold
-    window._applied_threshold_image = image
-    window.cursor = [7, 7, 0, 1]
-    window.brush_diameter.setValue(3.0)
-    window._set_tool("snap_brush")
-
-    window._stroke_started("X-Y", 7, 7)
-    window._stroke_finished("X-Y", 7, 7)
-
-    assert mask.data[5, 7, 0, 0] == 1
-    assert mask.data[7, 7, 0, 1] == 1
-    assert not np.any(mask.data[..., 2])
-    assert np.all((mask.data != 0) <= threshold)
-    finish_window(window, mask)
-
-
-def test_adjacent_frame_snap_brush_wraps_between_first_and_last_frames():
-    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
-    centers = ((7, 7), (9, 7), (5, 7))
-    pattern = np.asarray(
-        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
-        dtype=np.float32,
-    )
-    for frame, (h, v) in enumerate(centers):
-        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
-    window, _image, mask = make_window(
-        image_data, np.zeros(image_data.shape, dtype=np.uint8)
-    )
-    window.cursor = [7, 7, 0, 0]
-    window.brush_diameter.setValue(1.0)
-    window._set_tool("snap_brush")
-    window.snap_brush_panel.all_frames.setChecked(False)
-
-    window._stroke_started("X-Y", 7, 7)
-    window._stroke_finished("X-Y", 7, 7)
-
-    assert all(mask.data[h, v, 0, frame] == 1 for frame, (h, v) in enumerate(centers))
-    assert len(window._undo_stack) == 1
-    finish_window(window, mask)
-
-
-def test_snap_brush_highlights_only_propagated_additions_and_clears_feedback():
-    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
-    centers = ((5, 7), (7, 7), (9, 7))
-    pattern = np.asarray(
-        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
-        dtype=np.float32,
-    )
-    for frame, (h, v) in enumerate(centers):
-        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
-    window, _image, mask = make_window(
-        image_data, np.zeros(image_data.shape, dtype=np.uint8)
-    )
-    window.cursor = [7, 7, 0, 1]
-    window.brush_diameter.setValue(1.0)
-    window._set_tool("snap_brush")
-
-    window._stroke_started("X-Y", 7, 7)
-    window._stroke_finished("X-Y", 7, 7)
-
-    feedback = window._snap_feedback_data
-    assert window._snap_feedback_mask is mask
-    assert feedback is not None
-    assert feedback[5, 7, 0, 0]
-    assert feedback[9, 7, 0, 2]
-    assert not np.any(feedback[..., 1])
-    assert np.count_nonzero(feedback) == 2
-    assert window.statusBar().currentMessage() == window._tr(
-        "snap_feedback", count=2, frames=2
-    )
-    temporal_feedback = window.temporal_view.snap_feedback_item.image
-    assert temporal_feedback[0, 5, 3] > 0
-    assert temporal_feedback[2, 9, 3] > 0
-
-    window.cursor[3] = 0
-    window.refresh_views()
-    spatial_feedback = window.slice_views["X-Y"].snap_feedback_item.image
-    assert tuple(spatial_feedback[7, 5, :3]) == (255, 214, 64)
-    assert spatial_feedback[7, 5, 3] > 0
-
-    window.undo()
-    assert window._snap_feedback_data is None
-    assert all(
-        view.snap_feedback_item.image is None
-        for view in [*window.slice_views.values(), window.temporal_view]
-    )
-    window.redo()
-    assert window._snap_feedback_data is None
-
-    window.undo()
-    window.cursor[3] = 1
-    window._set_tool("snap_brush")
-    window._stroke_started("X-Y", 7, 7)
-    window._stroke_finished("X-Y", 7, 7)
-    assert window._snap_feedback_data is not None
-    window._set_tool("brush")
-    window._stroke_started("X-Y", 2, 2)
-    assert window._snap_feedback_data is None
-    window._stroke_finished("X-Y", 2, 2)
-    finish_window(window, mask)
-
-
 def test_temporary_eraser_only_clears_the_active_label_in_a_temporal_view():
     image_data = np.ones((7, 7, 1, 3), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
@@ -530,30 +301,211 @@ def test_applied_threshold_is_retained_but_inactive_on_an_incompatible_image():
     finish_window(window, mask)
 
 
-def test_held_all_frames_picker_and_region_barrier():
+def test_region_grow_stroke_keeps_labels_unchanged_until_release_and_honors_barriers():
     image_data = np.ones((7, 7, 1, 2), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
     mask_data[3, :, 0, 0] = 2
     window, _image, mask = make_window(image_data, mask_data)
     window.cursor = [1, 2, 0, 0]
     window.brush_diameter.setValue(1.0)
-    window._all_frames_held = True
-
-    window._stroke_started("X-Y", 1, 2)
-    window._stroke_finished("X-Y", 1, 2)
-
-    assert np.all(mask.data[1, 2, 0, :] == 1)
-
-    window._pick_label("X-Y", 3, 2)
-    assert window.active_label_value == 2
-    window.active_label_value = 1
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.scope.setCurrentIndex(0)
-    window._grow_from_seed("X-Y", 1, 1)
+    window.grow_panel.spatial_range.setValue(20.0)
+    window.grow_panel.frames_each_side.setValue(0)
+    window._set_tool("grow")
+    original = mask.data.copy()
 
+    window._stroke_started("X-Y", 1, 1)
+    window._stroke_moved("X-Y", 2, 5)
+
+    assert np.array_equal(mask.data, original)
+    assert window._grow_stroke_seeds
+    preview = window.slice_views["X-Y"].region_grow_preview_item.image
+    assert preview is not None
+    assert np.any(preview[..., 3] > 0)
+    window._stroke_finished("X-Y", 2, 5)
+
+    assert window.slice_views["X-Y"].region_grow_preview_item.image is None
     assert np.all(mask.data[:3, :, 0, 0] == 1)
     assert np.all(mask.data[3, :, 0, 0] == 2)
     assert np.all(mask.data[4:, :, 0, 0] == 0)
+    assert not np.any(mask.data[..., 1])
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    window.redo()
+    assert np.all(mask.data[:3, :, 0, 0] == 1)
+    finish_window(window, mask)
+
+
+def test_region_grow_panel_and_spatial_stroke_footprints_cover_all_spatial_views():
+    image_data = np.full((5, 5, 5, 1), np.nan, dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+
+    assert not hasattr(window.grow_panel, "scope")
+    assert window.grow_panel.spatial_range.suffix() == " mm"
+    assert window.grow_panel.frames_each_side.value() == 0
+    assert not window.grow_panel.replace_other_labels.isChecked()
+
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.spatial_range.setValue(0.0)
+    window.grow_panel.frames_each_side.setValue(0)
+    window.brush_diameter.setValue(3.0)
+    window._set_tool("grow")
+    window.cursor = [2, 2, 2, 0]
+    image_data[1:4, 1:4, 2, 0] = 1.0
+
+    window._stroke_started("X-Y", 2, 2)
+    assert len(window._grow_stroke_seeds) == 9
+    assert not np.any(mask.data)
+    window._stroke_finished("X-Y", 2, 2)
+    assert np.all(mask.data[1:4, 1:4, 2, 0] == 1)
+
+    mask.data.fill(0)
+    image_data.fill(np.nan)
+    image_data[1, 2, 3, 0] = 1.0
+    window.brush_diameter.setValue(1.0)
+    window.cursor = [2, 2, 2, 0]
+    window._stroke_started("X-Z", 1, 3)
+    window._stroke_finished("X-Z", 1, 3)
+    assert mask.data[1, 2, 3, 0] == 1
+
+    mask.data.fill(0)
+    image_data.fill(np.nan)
+    image_data[2, 1, 3, 0] = 1.0
+    window._stroke_started("Y-Z", 1, 3)
+    window._stroke_finished("Y-Z", 1, 3)
+    assert mask.data[2, 1, 3, 0] == 1
+    finish_window(window, mask)
+
+
+def test_region_grow_uses_its_temporal_range_not_all_frames_and_can_replace_labels():
+    image_data = np.ones((6, 1, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[3, 0, 0, 1] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    window.cursor = [1, 0, 0, 1]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.spatial_range.setValue(20.0)
+    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.replace_other_labels.setChecked(False)
+    window.all_frames_toggle.setChecked(True)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 1, 0)
+    window._stroke_finished("X-Y", 1, 0)
+
+    assert np.all(mask.data[:3, 0, 0, 1] == 1)
+    assert mask.data[3, 0, 0, 1] == 2
+    assert not np.any(mask.data[..., 0])
+    assert not np.any(mask.data[..., 2])
+
+    window.undo()
+    window.grow_panel.replace_other_labels.setChecked(True)
+    window._stroke_started("X-Y", 1, 0)
+    window._stroke_finished("X-Y", 1, 0)
+
+    assert np.all(mask.data[:, 0, 0, 1] == 1)
+    assert window.statusBar().currentMessage() == window._tr(
+        "grow_applied", added=5, replaced=1, sources="2: 1"
+    )
+    finish_window(window, mask)
+
+
+def test_region_grow_temporal_window_undo_and_redo_restore_every_affected_frame():
+    image_data = np.ones((4, 1, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    window.cursor = [1, 0, 0, 1]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.spatial_range.setValue(20.0)
+    window.grow_panel.frames_each_side.setValue(1)
+    window._set_tool("grow")
+    original = mask.data.copy()
+
+    window._stroke_started("X-Y", 1, 0)
+    window._stroke_finished("X-Y", 1, 0)
+    grown = mask.data.copy()
+
+    assert np.all(grown == 1)
+    assert len(window._undo_stack) == 1
+    assert window._undo_stack[-1].flat_indices.size == image_data.size
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    window.redo()
+    assert np.array_equal(mask.data, grown)
+    finish_window(window, mask)
+
+
+def test_region_grow_threshold_bypass_is_captured_at_stroke_start_and_temporal_views_are_read_only():
+    image_data = np.ones((5, 1, 1, 1), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[:2] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.cursor = [0, 0, 0, 0]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.spatial_range.setValue(20.0)
+    window.grow_panel.frames_each_side.setValue(0)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert np.all(mask.data[:2, 0, 0, 0] == 1)
+    assert not np.any(mask.data[2:, 0, 0, 0])
+    window.undo()
+    window._threshold_bypass_held = True
+    window._stroke_started("X-Y", 0, 0)
+    window._threshold_bypass_held = False
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert np.all(mask.data[:, 0, 0, 0] == 1)
+    before_temporal = mask.data.copy()
+    window._stroke_started("X-T", 0, 0)
+    window._stroke_finished("X-T", 0, 0)
+    assert np.array_equal(mask.data, before_temporal)
+    finish_window(window, mask)
+
+
+def test_region_grow_preview_and_seeds_are_filtered_by_threshold_before_release():
+    image_data = np.ones((5, 5, 1, 1), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[2, 2, 0, 0] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.cursor = [2, 2, 0, 0]
+    window.brush_diameter.setValue(3.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.spatial_range.setValue(0.0)
+    window.grow_panel.frames_each_side.setValue(0)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 2, 2)
+
+    assert window._grow_stroke_seeds == {(2, 2, 0, 0)}
+    preview = window.slice_views["X-Y"].region_grow_preview_item.image
+    assert preview is not None
+    assert np.count_nonzero(preview[..., 3]) == 1
+    assert not np.any(mask.data)
+    window._stroke_finished("X-Y", 2, 2)
+    assert mask.data[2, 2, 0, 0] == 1
+
+    window._threshold_bypass_held = True
+    window._stroke_started("X-Y", 2, 2)
+    window._threshold_bypass_held = False
+
+    assert len(window._grow_stroke_seeds) > 1
+    window._clear_stroke()
     finish_window(window, mask)
 
 
@@ -1033,13 +985,22 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     window.threshold_panel.set_bounds(0.0, 10.0)
     before = int(window._threshold_selection().sum())
 
-    window.threshold_panel.lower_slider.setValue(500)
+    assert window.threshold_panel.lower.suffix() == " %"
+    assert window.threshold_panel.lower.singleStep() == 0.01
+    assert window.threshold_panel.lower_slider.maximum() == 10_000
+    assert window.threshold_panel.lower_slider.orientation() == Qt.Orientation.Vertical
+    assert window.grow_panel.tolerance_control.slider.orientation() == Qt.Orientation.Vertical
+    window.threshold_panel.lower_slider.setValue(5_000)
 
     after = int(window._threshold_selection().sum())
     preview = window.slice_views["X-Y"].threshold_item.image
     assert after < before
     assert preview is not None
     assert np.any(preview[..., 3] > 0)
+
+    window.grow_panel.tolerance.setValue(0.1234)
+    assert window.grow_panel.tolerance.value() == 0.1234
+    assert window.grow_panel.tolerance.singleStep() == 0.0001
 
     full_refreshes = []
     window.refresh_views = lambda *args, **kwargs: full_refreshes.append(None)

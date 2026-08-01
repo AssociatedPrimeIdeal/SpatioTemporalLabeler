@@ -11,22 +11,36 @@ class FloatSliderSpin(QWidget):
 
     valueChanged = Signal(float)
 
-    def __init__(self, decimals: int = 5, parent: Any = None) -> None:
+    def __init__(
+        self,
+        decimals: int = 5,
+        parent: Any = None,
+        orientation: Qt.Orientation = Qt.Orientation.Horizontal,
+    ) -> None:
         super().__init__(parent)
+        self._decimals = max(0, int(decimals))
         self._minimum = 0.0
         self._maximum = 1.0
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 1000)
+        self.slider = QSlider(orientation)
+        self.slider.setRange(0, 10_000)
         self.slider.setTracking(True)
-        self.slider.setMinimumWidth(130)
+        self.slider.setPageStep(1_000)
+        if orientation == Qt.Orientation.Vertical:
+            self.slider.setMinimumHeight(104)
+            self.slider.setMaximumHeight(128)
+            self.slider.setMinimumWidth(24)
+        else:
+            self.slider.setMinimumWidth(130)
         self.slider.valueChanged.connect(self._slider_changed)
         layout.addWidget(self.slider, 1)
         self.spin = QDoubleSpinBox()
-        self.spin.setDecimals(decimals)
-        self.spin.setMaximumWidth(105)
+        self.spin.setDecimals(self._decimals)
+        self.spin.setMinimumWidth(118)
+        self.spin.setKeyboardTracking(False)
+        self.spin.setAccelerated(True)
         self.spin.valueChanged.connect(self._spin_changed)
         layout.addWidget(self.spin)
         self.set_range(0.0, 1.0)
@@ -37,7 +51,7 @@ class FloatSliderSpin(QWidget):
         current = self.value()
         self._minimum = float(minimum)
         self._maximum = float(maximum)
-        step = max((self._maximum - self._minimum) / 1000.0, 1e-9)
+        step = 10.0 ** (-self._decimals)
         self.spin.blockSignals(True)
         self.spin.setRange(self._minimum, self._maximum)
         self.spin.setSingleStep(step)

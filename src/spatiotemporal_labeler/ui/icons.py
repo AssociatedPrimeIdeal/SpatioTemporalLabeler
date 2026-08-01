@@ -21,13 +21,6 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawLine(QPointF(6, 18), QPointF(16, 8))
             painter.drawEllipse(QRectF(15, 4, 5, 5))
             painter.drawArc(QRectF(3, 15, 7, 6), 210 * 16, 220 * 16)
-        elif name == "snap_brush":
-            painter.drawLine(QPointF(5, 18), QPointF(14, 9))
-            painter.drawEllipse(QRectF(13, 5, 5, 5))
-            painter.drawArc(QRectF(2.5, 15, 7, 6), 210 * 16, 220 * 16)
-            painter.drawLine(QPointF(18, 13), QPointF(22, 13))
-            painter.drawLine(QPointF(20, 11), QPointF(22, 13))
-            painter.drawLine(QPointF(20, 15), QPointF(22, 13))
         elif name == "eraser":
             painter.save()
             painter.translate(12, 12)

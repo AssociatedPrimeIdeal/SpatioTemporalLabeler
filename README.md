@@ -22,7 +22,6 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 - Multiple image sequences, label sequences, and integer labels
 - Unified image/label import classification, drag-and-drop, and resizable selectable-plane previews for other loaded images
 - Physical round or square brush and eraser footprints
-- Adjacent-frame snap brush with cyclic temporal neighbors, configurable local image-similarity matching, and optional all-frame scope
 - Immediate 2D/3D scissors lasso for label erase or replacement, including all-time-frame edits
 - Closed-contour raster drawing with interior fill
 - Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width with per-image persistence and live values in other-image previews
@@ -30,7 +29,7 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 - Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
 - Diverse per-label colors with double-click color editing, row-menu rename/opacity controls, and a global label opacity control
 - Live window level/width sliders in a separate display panel
-- 2D/3D seed region growing that stops at other labels
+- Stroke-seeded local 3D grow repair followed by support-constrained frame-by-frame propagation, with label barriers and optional replacement
 - Per-label morphology with physical `mm` radii and `mm³` component volumes
 - Physical signed-distance interpolation between user-selected label keyframes
 - Automatic all-frame replication or selected-frame placement when mapping 3D labels to a 4D image
@@ -89,7 +88,7 @@ spatiotemporal-labeler
 
 | Input | Action |
 | --- | --- |
-| Left drag | Use the selected brush, eraser, scissors lasso, or contour tool |
+| Left drag | Use the selected brush, eraser, scissors lasso, contour, or region grow repair tool |
 | Alt + left drag in 3D | Rotate the 3D camera |
 | Right drag | Temporarily erase without changing the selected tool |
 | Hold Shift and move | Move the linked spatial cursor without editing |
@@ -102,7 +101,7 @@ spatiotemporal-labeler
 | Wheel in a spatial view | Change its orthogonal slice |
 | Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
-| `B`, `N`, `E`, `S`, `L`, `G` | Brush, adjacent-frame snap brush, eraser, scissors lasso, contour, or seed grow |
+| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or region grow repair |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |
 | Hold `H` | Temporarily hide all 2D label overlays |
 | `R` | Reset 2D zoom and pan, or auto-window and reset the hovered other-image preview |
@@ -112,9 +111,7 @@ spatiotemporal-labeler
 | `Ctrl+Z`, `Ctrl+Y` | Undo or redo |
 | `Esc` | Cancel a pending contour or active lasso preview |
 
-Enable **All time frames** to apply one spatial gesture in every frame. Ordinary tools repeat the same X/Y/Z coordinates; the adjacent-frame snap brush searches locally for the corresponding image position. Temporal-view edits always affect the exact time pixels drawn.
-
-The snap brush compares a reference patch `R` with each candidate patch `C` using zero-mean normalized cross-correlation: `sum((R - mean(R)) * (C - mean(C))) / sqrt(sum((R - mean(R))^2) * sum((C - mean(C))^2))`. It ranks correlation with a small distance penalty, rejects candidates outside the pixel-radius maximum displacement, and skips target frames below the minimum similarity. It targets all temporal frames by default; its tool panel can switch to a configurable number of cyclic frames on each side and also controls patch radius in pixels, maximum displacement in pixels (default `5 px`), and minimum accepted similarity. Time is cyclic, so the frames before the first and after the last wrap to the opposite end. When a checked applied threshold mask is active, both candidate centers and every written label voxel are restricted to that mask. After a stroke, voxels newly added by propagation are highlighted in yellow in the spatial and temporal views until the next edit, undo/redo, or active image/label-sequence change.
+Enable **All time frames** to apply ordinary spatial gestures in every frame. Region grow repair has its own local temporal range and does not use this option. Temporal-view region-grow gestures are read-only.
 
 ## Data Contract
 

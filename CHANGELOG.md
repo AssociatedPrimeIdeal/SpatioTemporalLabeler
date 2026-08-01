@@ -6,32 +6,26 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added stroke-seeded local 3D+t region grow repair with a live uncommitted brush preview, bounded physical and temporal ranges, label barriers, optional label replacement, and atomic undo/redo.
 ### Changed
 
+- Removed the temporal image-matching brush workflow.
+- Percentage threshold bounds and region-grow tolerance now use vertical high-resolution sliders with fine numeric adjustment.
+- Region grow now completes the stroke frame in 3D before propagating independently one frame at a time with local temporal support, preventing jumps to unrelated structures.
+- Region-grow brush previews and submitted stroke seeds now respect the threshold selection captured when the stroke starts, unless bypass is held.
 ### Fixed
 
 ## 0.3.1 - 2026-08-01
 
 ### Added
 
-- Snap-brush propagation now receives a temporary yellow highlight in spatial and temporal views, with the added voxel and affected-frame counts reported in the status bar.
-
 ### Changed
 
-- The adjacent-frame snap brush now targets all temporal frames by default, while its panel can switch back to a configurable cyclic neighbor range.
-- Adjacent-frame snapping now defines patch radius and maximum displacement in pixels, uses a tighter 5 px default maximum displacement, applies distance-aware ranking, and respects an applied threshold mask for both candidate centers and final label writes.
-
 ### Fixed
-
-### Performance
-
-- Snap-brush drags now match once per target frame and mouse event, then interpolate the label path between matched endpoints instead of recomputing image similarity for every crossed voxel.
 
 ## 0.3.0 - 2026-07-31
 
 ### Added
-
-- Added an adjacent-frame snap brush that follows local image appearance through cyclic temporal neighbors, exposes frame count, patch radius, search radius, and minimum-similarity controls, expands to every frame under all-frame editing, and records each stroke as one undoable edit.
 
 ### Changed
 
@@ -170,7 +164,7 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 - Signed-distance label interpolation between user-selected keyframes, recorded as one undoable edit.
 - 3D label mapping onto 4D images, with all-frame replication by default or placement in one selected frame.
 - Threshold masks with live preview, manual and automatic methods, and a held bypass shortcut.
-- Window level/width controls, label picking, and 2D/3D seed region growing.
+- Window level/width controls and label picking.
 - 2D zoom, pan, reset, full-panel maximize, and per-axis locator colors.
 - Middle-button panning in every editable 2D view.
 - Continuous brush and eraser gestures now update all four visible 2D label overlays in real time while rebuilding 3D surfaces only after release.

@@ -4,7 +4,6 @@ from collections.abc import Sequence
 
 import numpy as np
 from numpy.typing import NDArray
-from skimage.feature import match_template
 
 
 def apply_disk(
@@ -80,131 +79,6 @@ def raster_line(
         if doubled <= delta_h:
             error += delta_h
             v0 += step_v
-
-
-def find_similar_patch_center(
-    reference: NDArray[np.number],
-    target: NDArray[np.number],
-    center: tuple[int, int],
-    patch_radius: tuple[int, int],
-    search_radius: tuple[int, int],
-    minimum_similarity: float = -1.0,
-    allowed_centers: NDArray[np.bool_] | None = None,
-) -> tuple[int, int] | None:
-    """Return the best normalized-correlation match that clears the threshold."""
-    reference_data = np.asarray(reference, dtype=np.float64)
-    target_data = np.asarray(target, dtype=np.float64)
-    if reference_data.ndim != 2 or target_data.ndim != 2:
-        raise ValueError("Patch matching requires two-dimensional image planes")
-    if reference_data.shape != target_data.shape:
-        raise ValueError("Reference and target image planes must have the same shape")
-    allowed_data = None
-    if allowed_centers is not None:
-        allowed_data = np.asarray(allowed_centers, dtype=bool)
-        if allowed_data.shape != target_data.shape:
-            raise ValueError("Allowed centers must match the target image plane")
-
-    h_center, v_center = (int(center[0]), int(center[1]))
-    if not (
-        0 <= h_center < reference_data.shape[0]
-        and 0 <= v_center < reference_data.shape[1]
-    ):
-        raise ValueError("Patch center must be inside the image plane")
-    h_patch, v_patch = (max(0, int(value)) for value in patch_radius)
-    h_search, v_search = (max(0, int(value)) for value in search_radius)
-
-    def edge_padded_region(
-        data: NDArray[np.float64],
-        h_start: int,
-        h_stop: int,
-        v_start: int,
-        v_stop: int,
-    ) -> NDArray[np.float64]:
-        clipped_h0 = max(0, h_start)
-        clipped_h1 = min(data.shape[0], h_stop)
-        clipped_v0 = max(0, v_start)
-        clipped_v1 = min(data.shape[1], v_stop)
-        region = data[clipped_h0:clipped_h1, clipped_v0:clipped_v1]
-        return np.pad(
-            region,
-            (
-                (max(0, -h_start), max(0, h_stop - data.shape[0])),
-                (max(0, -v_start), max(0, v_stop - data.shape[1])),
-            ),
-            mode="edge",
-        )
-
-    reference_patch = edge_padded_region(
-        reference_data,
-        h_center - h_patch,
-        h_center + h_patch + 1,
-        v_center - v_patch,
-        v_center + v_patch + 1,
-    )
-
-    h0 = max(0, h_center - h_search)
-    h1 = min(target_data.shape[0] - 1, h_center + h_search)
-    v0 = max(0, v_center - v_search)
-    v1 = min(target_data.shape[1] - 1, v_center + v_search)
-    search_region = edge_padded_region(
-        target_data,
-        h0 - h_patch,
-        h1 + h_patch + 1,
-        v0 - v_patch,
-        v1 + v_patch + 1,
-    )
-
-    finite_reference = np.isfinite(reference_patch)
-    minimum_count = max(1, int(np.ceil(reference_patch.size / 2.0)))
-    if np.count_nonzero(finite_reference) < minimum_count:
-        return None
-    reference_fill = float(np.mean(reference_patch[finite_reference]))
-    reference_patch = np.where(finite_reference, reference_patch, reference_fill)
-    finite_search = np.isfinite(search_region)
-    if not np.any(finite_search):
-        return None
-    search_fill = float(np.mean(search_region[finite_search]))
-    search_region = np.where(finite_search, search_region, search_fill)
-    score = 1.0 - match_template(search_region, reference_patch, pad_input=False)
-    score[~np.isfinite(score)] = np.inf
-
-    candidate_h, candidate_v = np.indices(score.shape)
-    candidate_h += h0
-    candidate_v += v0
-    delta_h = candidate_h - h_center
-    delta_v = candidate_v - v_center
-    normalized_distance = np.zeros(score.shape, dtype=np.float64)
-    inside_radius = np.ones(score.shape, dtype=bool)
-    if h_search:
-        normalized_distance += (delta_h / h_search) ** 2
-    else:
-        inside_radius &= delta_h == 0
-    if v_search:
-        normalized_distance += (delta_v / v_search) ** 2
-    else:
-        inside_radius &= delta_v == 0
-    inside_radius &= normalized_distance <= 1.0 + 1e-12
-    score[~inside_radius] = np.inf
-    if allowed_data is not None:
-        score[~allowed_data[h0 : h1 + 1, v0 : v1 + 1]] = np.inf
-
-    ranking_score = score + 0.15 * normalized_distance
-    distance = delta_h**2 + delta_v**2
-    order = np.lexsort(
-        (
-            candidate_v.ravel(),
-            candidate_h.ravel(),
-            distance.ravel(),
-            ranking_score.ravel(),
-        )
-    )
-    if not order.size or not np.isfinite(score.ravel()[order[0]]):
-        return None
-    best = int(order[0])
-    similarity = 1.0 - float(score.ravel()[best])
-    if similarity + 1e-12 < float(minimum_similarity):
-        return None
-    return int(candidate_h.ravel()[best]), int(candidate_v.ravel()[best])
 
 
 def fill_polygon(

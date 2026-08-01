@@ -61,9 +61,9 @@ from spatiotemporal_labeler.tools import (
     apply_square,
     automatic_thresholds,
     build_threshold_mask,
-    connected_seed_region,
-    find_similar_patch_center,
     fill_polygon,
+    RegionGrowConfig,
+    grow_region_4d,
     interpolate_label_frames,
     polygon_selection,
     raster_line,
@@ -83,7 +83,6 @@ from .region_grow_panel import RegionGrowPanel
 from .render_settings import RenderSettings
 from .settings_dialog import DEFAULT_SHORTCUTS, SettingsDialog
 from .slice_view import SliceView, TemporalView
-from .snap_brush_panel import SnapBrushPanel
 from .threshold_panel import ThresholdPanel
 from .viewer_3d import Mask3DViewer
 from .window_level_panel import WindowLevelPanel
@@ -94,6 +93,7 @@ TEMPORAL_AXES = {"X-T": 0, "Y-T": 1, "Z-T": 2}
 AXIS_NAMES = ("X", "Y", "Z", "T")
 MEDICAL_IMAGE_FILTER = "Medical images (*.nrrd *.nii *.nii.gz)"
 MASK_NAME_TOKENS = ("seg", "mask", "label")
+MAX_GROW_STROKE_SEEDS = 500_000
 
 
 @dataclass
@@ -165,9 +165,17 @@ class MainWindow(QMainWindow):
         self._stroke_bounds: tuple[slice, slice, slice] | None = None
         self._stroke_tool = "brush"
         self._stroke_label_value = 1
-        self._stroke_snap_points: dict[int, tuple[int, int]] = {}
-        self._snap_feedback_mask: Sequence4D | None = None
-        self._snap_feedback_data: np.ndarray | None = None
+        self._grow_stroke_seeds: set[tuple[int, int, int, int]] = set()
+        self._grow_stroke_last_point: tuple[int, int] | None = None
+        self._grow_stroke_diameter_mm = 0.0
+        self._grow_stroke_shape = "round"
+        self._grow_stroke_seed_limit_exceeded = False
+        self._grow_stroke_preview: np.ndarray | None = None
+        self._grow_stroke_preview_plane: str | None = None
+        self._grow_stroke_threshold_selection: np.ndarray | None = None
+        self._grow_footprint_offset_cache: dict[
+            tuple[str, str, float, tuple[float, float]], np.ndarray
+        ] = {}
         self._tool_before_grow = "brush"
         self._contour: list[tuple[int, int]] = []
         self._pending_contour: PendingContour | None = None
@@ -389,15 +397,6 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.grow_dock)
         self.grow_dock.hide()
 
-        self.snap_brush_dock = QDockWidget(self)
-        self.snap_brush_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.snap_brush_panel = SnapBrushPanel()
-        self.snap_brush_dock.setWidget(self.snap_brush_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.snap_brush_dock)
-        self.snap_brush_dock.hide()
-
         self.lasso_dock = QDockWidget(self)
         self.lasso_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -437,8 +436,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.display_dock)
         self.display_dock.hide()
         self.tabifyDockWidget(self.threshold_dock, self.grow_dock)
-        self.tabifyDockWidget(self.grow_dock, self.snap_brush_dock)
-        self.tabifyDockWidget(self.snap_brush_dock, self.lasso_dock)
+        self.tabifyDockWidget(self.grow_dock, self.lasso_dock)
         self.tabifyDockWidget(self.lasso_dock, self.morphology_dock)
         self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
         self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
@@ -489,7 +487,6 @@ class MainWindow(QMainWindow):
         self.tool_actions: dict[str, QAction] = {}
         for key in (
             "brush",
-            "snap_brush",
             "eraser",
             "lasso",
             "contour",
@@ -499,7 +496,6 @@ class MainWindow(QMainWindow):
             action = QAction("", self, checkable=True)
             icon_color = {
                 "brush": "#087f8c",
-                "snap_brush": "#25834f",
                 "eraser": "#d95252",
                 "lasso": "#b66a15",
                 "contour": "#b77a00",
@@ -719,7 +715,6 @@ class MainWindow(QMainWindow):
         self.image_previews_action.setText(self._tr("image_previews"))
         self.threshold_dock.setWindowTitle(self._tr("threshold_dock"))
         self.grow_dock.setWindowTitle(self._tr("grow_dock"))
-        self.snap_brush_dock.setWindowTitle(self._tr("snap_brush_dock"))
         self.lasso_dock.setWindowTitle(self._tr("lasso_dock"))
         self.morphology_dock.setWindowTitle(self._tr("morphology_dock"))
         self.morphology_action.setText(self._tr("morphology"))
@@ -734,7 +729,6 @@ class MainWindow(QMainWindow):
         self.label_panel.set_language(self.language)
         self.threshold_panel.set_language(self.language)
         self.grow_panel.set_language(self.language)
-        self.snap_brush_panel.set_language(self.language)
         self.lasso_panel.set_language(self.language)
         self.morphology_panel.set_language(self.language)
         self.interpolation_panel.set_language(self.language)
@@ -771,7 +765,6 @@ class MainWindow(QMainWindow):
             return
         for key in (
             "brush",
-            "snap_brush",
             "eraser",
             "lasso",
             "contour",
@@ -1344,7 +1337,6 @@ class MainWindow(QMainWindow):
             return False
 
         self._cancel_pending_contour(silent=True)
-        self._clear_snap_feedback()
         self._clear_stroke()
         self._clear_lasso_3d_state()
         self._clear_lasso_overlays()
@@ -1402,7 +1394,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _active_image_changed(self, _index: int) -> None:
-        self._clear_snap_feedback()
+        self._clear_stroke()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._hover_status_context = None
@@ -1432,6 +1424,7 @@ class MainWindow(QMainWindow):
         data_low, data_high = self._image_value_range
         self.threshold_panel.set_image_range(data_low, data_high)
         self.grow_panel.set_image_range(data_low, data_high)
+        self.grow_panel.set_frame_count(image.frame_count)
         self.window_level_panel.set_image_range(data_low, data_high)
         self._sync_window_controls()
         if self.threshold_panel.method_key != "manual":
@@ -1487,7 +1480,7 @@ class MainWindow(QMainWindow):
         event.acceptProposedAction()
 
     def _active_mask_changed(self, _index: int) -> None:
-        self._clear_snap_feedback()
+        self._clear_stroke()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._sync_label_panel()
@@ -1591,7 +1584,6 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
-        self._clear_snap_feedback()
         indices = np.flatnonzero(mask.data == value).astype(np.intp, copy=False)
         if indices.size:
             before = mask.data.flat[indices].copy()
@@ -1774,7 +1766,6 @@ class MainWindow(QMainWindow):
             self._global_label_opacity,
             self._applied_threshold_opacity,
         )
-        self._refresh_snap_feedback_overlays()
         self._refresh_cursor_status()
         self._sync_slider()
         self.viewer_3d.set_cursor(
@@ -1855,55 +1846,6 @@ class MainWindow(QMainWindow):
         if self._maximized_plane is None:
             self._update_image_previews(labels_only=True)
 
-    def _refresh_snap_feedback_overlays(self) -> None:
-        feedback = self._snap_feedback_data
-        if feedback is None or self._snap_feedback_mask is not self.active_mask:
-            for view in [*self.slice_views.values(), self.temporal_view]:
-                view.set_snap_feedback_overlay(None)
-            return
-        for plane, view in self.slice_views.items():
-            view.set_snap_feedback_overlay(self._extract_spatial_data(feedback, plane))
-        mode = self.temporal_mode.currentText()
-        self.temporal_view.set_snap_feedback_overlay(
-            self._extract_temporal_line(feedback, mode)
-        )
-
-    def _clear_snap_feedback(self) -> None:
-        had_feedback = self._snap_feedback_data is not None
-        self._snap_feedback_mask = None
-        self._snap_feedback_data = None
-        if had_feedback:
-            self.statusBar().clearMessage()
-        if not hasattr(self, "slice_views"):
-            return
-        for view in [*self.slice_views.values(), self.temporal_view]:
-            view.set_snap_feedback_overlay(None)
-
-    def _set_snap_feedback(self, command: EditCommand) -> tuple[int, int]:
-        changed_to_label = (
-            (command.after_values == self._stroke_label_value)
-            & (command.before_values != command.after_values)
-        )
-        if not np.any(changed_to_label):
-            self._clear_snap_feedback()
-            return 0, 0
-        selected_indices = command.flat_indices[changed_to_label]
-        selected_frames = np.unravel_index(
-            selected_indices, command.mask.data.shape
-        )[3]
-        propagated = selected_frames != self._stroke_frame
-        selected_indices = selected_indices[propagated]
-        selected_frames = selected_frames[propagated]
-        if not selected_indices.size:
-            self._clear_snap_feedback()
-            return 0, 0
-        feedback = np.zeros(command.mask.data.shape, dtype=bool)
-        feedback.flat[selected_indices] = True
-        self._snap_feedback_mask = command.mask
-        self._snap_feedback_data = feedback
-        self._refresh_snap_feedback_overlays()
-        return int(selected_indices.size), int(np.unique(selected_frames).size)
-
     def _stroke_started(
         self, plane: str, h: int, v: int, temporary_erase: bool = False
     ) -> None:
@@ -1915,8 +1857,8 @@ class MainWindow(QMainWindow):
         if not temporary_erase and effective_tool == "picker":
             self._pick_label(plane, h, v)
             return
-        if not temporary_erase and effective_tool == "grow":
-            self._grow_from_seed(plane, h, v)
+        if not temporary_erase and effective_tool == "grow" and plane in TEMPORAL_AXES:
+            self.statusBar().showMessage(self._tr("grow_temporal"), 3000)
             return
         if (
             mask is None
@@ -1925,7 +1867,6 @@ class MainWindow(QMainWindow):
             or (effective_tool == "contour" and self._pending_contour is not None)
         ):
             return
-        self._clear_snap_feedback()
         if temporary_erase and self._pending_contour is not None:
             self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
@@ -1936,6 +1877,9 @@ class MainWindow(QMainWindow):
         self._stroke_frame = self.cursor[3]
         self._stroke_context = self._plane_context(plane)
         self._stroke_bounds = None
+        if self._stroke_tool == "grow":
+            self._start_grow_stroke(plane, h, v)
+            return
         if plane in TEMPORAL_AXES:
             self._stroke_frames = tuple(range(mask.frame_count))
         else:
@@ -1954,7 +1898,11 @@ class MainWindow(QMainWindow):
     def _stroke_moved(
         self, plane: str, h: int, v: int, _temporary_erase: bool = False
     ) -> None:
-        if self._stroke_before is None or not self._valid_plane_point(plane, h, v):
+        if (
+            self._stroke_mask is None
+            or (self._stroke_before is None and self._stroke_tool != "grow")
+            or not self._valid_plane_point(plane, h, v)
+        ):
             return
         if self._contour and self._contour[-1] == (h, v):
             return
@@ -1965,6 +1913,8 @@ class MainWindow(QMainWindow):
                     self._view_for_plane(plane).set_contour(self._contour)
                 else:
                     self._view_for_plane(plane).set_lasso(self._contour)
+        elif self._stroke_tool == "grow":
+            self._append_grow_stroke(plane, h, v)
         else:
             self._paint_to(plane, h, v)
 
@@ -1972,7 +1922,7 @@ class MainWindow(QMainWindow):
         self, plane: str, h: int, v: int, _temporary_erase: bool = False
     ) -> None:
         mask, before = self._stroke_mask, self._stroke_before
-        if mask is None or before is None:
+        if mask is None or (before is None and self._stroke_tool != "grow"):
             return
         if self._stroke_tool == "contour":
             if self._valid_plane_point(plane, h, v) and self._contour[-1] != (h, v):
@@ -2007,6 +1957,11 @@ class MainWindow(QMainWindow):
                 ),
                 4500,
             )
+            return
+        if self._stroke_tool == "grow":
+            if self._valid_plane_point(plane, h, v):
+                self._append_grow_stroke(plane, h, v)
+            self._finish_grow_stroke(mask)
             return
         if self._valid_plane_point(plane, h, v) and (
             not self._contour or self._contour[-1] != (h, v)
@@ -2047,7 +2002,6 @@ class MainWindow(QMainWindow):
     def _lasso_3d_started(self) -> None:
         if self.tool != "lasso":
             return
-        self._clear_snap_feedback()
         for view in [*self.slice_views.values(), self.temporal_view]:
             view.set_lasso([])
         mask = self.active_mask
@@ -2128,6 +2082,209 @@ class MainWindow(QMainWindow):
         self._lasso_3d_frames = ()
         self._lasso_3d_before = None
 
+    def _start_grow_stroke(self, plane: str, h: int, v: int) -> None:
+        self._clear_grow_stroke_preview()
+        self._grow_stroke_seeds.clear()
+        self._grow_stroke_last_point = None
+        self._grow_stroke_diameter_mm = float(self.brush_diameter.value())
+        self._grow_stroke_shape = str(self.brush_shape.currentData())
+        self._grow_stroke_seed_limit_exceeded = False
+        # The selection and bypass state are gesture-local so a changing panel
+        # cannot make the visible footprint disagree with the submitted seeds.
+        self._grow_stroke_threshold_selection = (
+            None
+            if self._stroke_ignore_threshold
+            else self._active_threshold_selection()
+        )
+        h_axis, v_axis, _ = PLANE_AXES[plane]
+        image = self.active_image
+        if image is not None:
+            self._grow_stroke_preview = np.zeros(
+                (image.data.shape[h_axis], image.data.shape[v_axis]), dtype=bool
+            )
+            self._grow_stroke_preview_plane = plane
+        self._append_grow_stroke(plane, h, v)
+
+    def _clear_grow_stroke_preview(self) -> None:
+        self._grow_stroke_preview = None
+        self._grow_stroke_preview_plane = None
+        if not hasattr(self, "slice_views"):
+            return
+        for view in self.slice_views.values():
+            view.set_region_grow_preview(None)
+
+    def _grow_footprint_offsets(
+        self, plane: str, spacing: tuple[float, float]
+    ) -> np.ndarray:
+        key = (plane, self._grow_stroke_shape, self._grow_stroke_diameter_mm, spacing)
+        cached = self._grow_footprint_offset_cache.get(key)
+        if cached is not None:
+            return cached
+        radius_mm = self._grow_stroke_diameter_mm / 2.0
+        radius_converter = np.floor if self._grow_stroke_shape == "square" else np.ceil
+        h_radius = int(radius_converter(radius_mm / spacing[0]))
+        v_radius = int(radius_converter(radius_mm / spacing[1]))
+        if (2 * h_radius + 1) * (2 * v_radius + 1) > MAX_GROW_STROKE_SEEDS:
+            return np.empty((0, 2), dtype=np.intp)
+        horizontal, vertical = np.mgrid[-h_radius : h_radius + 1, -v_radius : v_radius + 1]
+        if self._grow_stroke_shape == "square":
+            selected = np.ones(horizontal.shape, dtype=bool)
+        else:
+            selected = (
+                (horizontal * spacing[0]) ** 2 + (vertical * spacing[1]) ** 2
+                <= radius_mm**2
+            )
+        offsets = np.column_stack((horizontal[selected], vertical[selected])).astype(
+            np.intp, copy=False
+        )
+        self._grow_footprint_offset_cache[key] = offsets
+        return offsets
+
+    def _append_grow_stroke(self, plane: str, h: int, v: int) -> None:
+        image = self.active_image
+        if image is None or plane not in PLANE_AXES:
+            return
+        start = self._grow_stroke_last_point or (h, v)
+        spacing = self._editing_spacing(plane, image)
+        offsets = self._grow_footprint_offsets(plane, spacing)
+        if not offsets.size:
+            self._grow_stroke_seed_limit_exceeded = True
+            return
+        x_size, y_size, z_size = image.data.shape[:3]
+        frame = self._stroke_frame
+        preview = (
+            self._grow_stroke_preview
+            if self._grow_stroke_preview_plane == plane
+            else None
+        )
+        for point_h, point_v in raster_line(start, (h, v)):
+            coordinates = offsets + np.asarray((point_h, point_v), dtype=np.intp)
+            voxels = np.empty((coordinates.shape[0], 4), dtype=np.intp)
+            if plane == "X-Y":
+                voxels[:, 0:2] = coordinates
+                voxels[:, 2] = self._stroke_context[0]
+            elif plane == "X-Z":
+                voxels[:, 0] = coordinates[:, 0]
+                voxels[:, 1] = self._stroke_context[0]
+                voxels[:, 2] = coordinates[:, 1]
+            else:
+                voxels[:, 0] = self._stroke_context[0]
+                voxels[:, 1:3] = coordinates
+            voxels[:, 3] = frame
+            valid = (
+                (voxels[:, 0] >= 0)
+                & (voxels[:, 0] < x_size)
+                & (voxels[:, 1] >= 0)
+                & (voxels[:, 1] < y_size)
+                & (voxels[:, 2] >= 0)
+                & (voxels[:, 2] < z_size)
+            )
+            valid_voxels = voxels[valid]
+            valid_coordinates = coordinates[valid]
+            selection = self._grow_stroke_threshold_selection
+            if selection is not None and valid_voxels.size:
+                threshold_valid = selection[
+                    tuple(valid_voxels[:, axis] for axis in range(4))
+                ]
+                valid_voxels = valid_voxels[threshold_valid]
+                valid_coordinates = valid_coordinates[threshold_valid]
+            if preview is not None:
+                preview[valid_coordinates[:, 0], valid_coordinates[:, 1]] = True
+            self._grow_stroke_seeds.update(map(tuple, valid_voxels))
+            if len(self._grow_stroke_seeds) > MAX_GROW_STROKE_SEEDS:
+                self._grow_stroke_seed_limit_exceeded = True
+                return
+        self._grow_stroke_last_point = (h, v)
+        if preview is not None:
+            self.slice_views[plane].set_region_grow_preview(preview)
+
+    def _finish_grow_stroke(self, mask: Sequence4D) -> None:
+        image = self.active_image
+        if image is None or mask is not self.active_mask:
+            self._clear_stroke()
+            return
+        if self._grow_stroke_seed_limit_exceeded:
+            self._clear_stroke()
+            self.statusBar().showMessage(self._tr("grow_seed_limit"), 5000)
+            return
+        selection = self._grow_stroke_threshold_selection
+        config = RegionGrowConfig(
+            tolerance=float(self.grow_panel.tolerance.value()),
+            spatial_margin_mm=float(self.grow_panel.spatial_range.value()),
+            temporal_radius=int(self.grow_panel.frames_each_side.value()),
+            replace_other_labels=self.grow_panel.replace_other_labels.isChecked(),
+        )
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = grow_region_4d(
+                image.data,
+                mask.data,
+                np.asarray(sorted(self._grow_stroke_seeds), dtype=np.intp),
+                active_label=self._stroke_label_value,
+                spacing_xyz=mask.spacing_xyz,
+                t0=self._stroke_frame,
+                config=config,
+                threshold_mask=selection,
+            )
+        except Exception as error:
+            self._clear_stroke()
+            QMessageBox.critical(self, self._tr("grow_failed"), str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        if result.aborted:
+            self._clear_stroke()
+            self.statusBar().showMessage(self._tr("grow_limit"), 5000)
+            return
+        coordinates = result.accepted_voxels
+        if not coordinates.size:
+            self._clear_stroke()
+            self.statusBar().showMessage(self._tr("grow_no_changes"), 3500)
+            return
+        coordinate_tuple = tuple(coordinates[:, axis] for axis in range(4))
+        before_values = mask.data[coordinate_tuple].copy()
+        changed = before_values != self._stroke_label_value
+        if not np.any(changed):
+            self._clear_stroke()
+            self.statusBar().showMessage(self._tr("grow_no_changes"), 3500)
+            return
+        changed_coordinates = coordinates[changed]
+        changed_tuple = tuple(changed_coordinates[:, axis] for axis in range(4))
+        after_values = np.full(
+            changed_coordinates.shape[0], self._stroke_label_value, dtype=mask.data.dtype
+        )
+        mask.data[changed_tuple] = after_values
+        command = EditCommand(
+            mask=mask,
+            flat_indices=np.ravel_multi_index(
+                changed_tuple, mask.data.shape
+            ).astype(np.intp, copy=False),
+            before_values=before_values[changed],
+            after_values=after_values,
+            focus_frame=self._stroke_frame,
+        )
+        mask.dirty = True
+        self._undo_stack.append(command)
+        self._undo_stack = self._undo_stack[-30:]
+        self._redo_stack.clear()
+        self._clear_stroke()
+        self._update_mask_combo_text()
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
+        self._update_enabled_state()
+        sources = ", ".join(
+            f"{value}: {count}" for value, count in sorted(result.source_label_counts.items())
+        )
+        self.statusBar().showMessage(
+            self._tr(
+                "grow_applied",
+                added=result.added_voxel_count,
+                replaced=result.replaced_voxel_count,
+                sources=sources or self._tr("grow_none"),
+            ),
+            6000,
+        )
+
     def _paint_to(self, plane: str, h: int, v: int) -> None:
         mask, image = self._stroke_mask, self.active_image
         if mask is None or image is None:
@@ -2168,69 +2325,20 @@ class MainWindow(QMainWindow):
             ]
         operation = apply_disk if self.brush_shape.currentData() == "round" else apply_square
         radius_mm = self.brush_diameter.value() / 2.0
-        snap_enabled = self._stroke_tool == "snap_brush" and plane in PLANE_AXES
-        if snap_enabled:
-            reference_image_plane = self._array_plane(
-                image.data,
-                plane,
-                self._stroke_frame,
-                self._stroke_context,
-            )
-            target_image_planes = [
-                self._array_plane(image.data, plane, frame, self._stroke_context)
-                for frame in self._stroke_frames
-            ]
-            patch_radius_value = self.snap_brush_panel.patch_radius.value()
-            patch_radius = (patch_radius_value, patch_radius_value)
-            search_radius_value = self.snap_brush_panel.search_radius.value()
-            search_radius = (search_radius_value, search_radius_value)
-            minimum_similarity = self.snap_brush_panel.minimum_similarity.value() / 100.0
-            for frame, plane_data, allowed, target_image_plane in zip(
-                self._stroke_frames, planes, allowed_planes, target_image_planes
-            ):
-                if frame == self._stroke_frame:
-                    matched_point = (h, v)
-                else:
-                    matched_point = find_similar_patch_center(
-                        reference_image_plane,
-                        target_image_plane,
-                        (h, v),
-                        patch_radius,
-                        search_radius,
-                        minimum_similarity,
-                        allowed_centers=allowed,
-                    )
-                if matched_point is None:
-                    self._stroke_snap_points.pop(frame, None)
-                    continue
-                previous_point = self._stroke_snap_points.get(frame, matched_point)
-                for target_point in raster_line(previous_point, matched_point):
-                    affected = operation(
-                        plane_data,
-                        target_point,
-                        radius_mm,
-                        spacing,
-                        value,
-                        allowed=allowed,
-                    )
-                    if affected is not None:
-                        self._include_stroke_bounds(plane, affected)
-                self._stroke_snap_points[frame] = matched_point
-        else:
-            start_h, start_v = self._contour[-1] if self._contour else (h, v)
-            points = raster_line((start_h, start_v), (h, v))
-            for plane_data, allowed in zip(planes, allowed_planes):
-                for target_point in points:
-                    affected = operation(
-                        plane_data,
-                        target_point,
-                        radius_mm,
-                        spacing,
-                        value,
-                        allowed=allowed,
-                    )
-                    if affected is not None:
-                        self._include_stroke_bounds(plane, affected)
+        start_h, start_v = self._contour[-1] if self._contour else (h, v)
+        points = raster_line((start_h, start_v), (h, v))
+        for plane_data, allowed in zip(planes, allowed_planes):
+            for target_point in points:
+                affected = operation(
+                    plane_data,
+                    target_point,
+                    radius_mm,
+                    spacing,
+                    value,
+                    allowed=allowed,
+                )
+                if affected is not None:
+                    self._include_stroke_bounds(plane, affected)
         if not self._contour or self._contour[-1] != (h, v):
             self._contour.append((h, v))
         self._refresh_stroke_overlays()
@@ -2353,21 +2461,11 @@ class MainWindow(QMainWindow):
             self._undo_stack.append(command)
             self._undo_stack = self._undo_stack[-30:]
             self._redo_stack.clear()
-        snap_feedback = (0, 0)
-        if command is not None and self._stroke_tool == "snap_brush":
-            snap_feedback = self._set_snap_feedback(command)
         self._clear_stroke()
         if command is not None:
             self._update_mask_combo_text()
             self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
-        if snap_feedback[0]:
-            self.statusBar().showMessage(
-                self._tr(
-                    "snap_feedback", count=snap_feedback[0], frames=snap_feedback[1]
-                ),
-                6000,
-            )
 
     def _clear_stroke(self, keep_contour: bool = False) -> None:
         self._stroke_before = None
@@ -2378,28 +2476,19 @@ class MainWindow(QMainWindow):
         self._stroke_tool = self.tool
         self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = False
-        self._stroke_snap_points.clear()
+        self._grow_stroke_seeds.clear()
+        self._grow_stroke_last_point = None
+        self._grow_stroke_seed_limit_exceeded = False
+        self._grow_stroke_threshold_selection = None
+        self._clear_grow_stroke_preview()
         if not keep_contour:
             self._contour = []
 
     def _spatial_edit_frames(
         self, mask: Sequence4D, tool: str, focus_frame: int
     ) -> tuple[int, ...]:
-        if (
-            self.all_frames_toggle.isChecked()
-            or self._all_frames_held
-            or (tool == "snap_brush" and self.snap_brush_panel.all_frames.isChecked())
-        ):
+        if self.all_frames_toggle.isChecked() or self._all_frames_held:
             return tuple(range(mask.frame_count))
-        if tool == "snap_brush":
-            frame_radius = min(
-                self.snap_brush_panel.frame_radius.value(), mask.frame_count - 1
-            )
-            frames = {
-                (focus_frame + offset) % mask.frame_count
-                for offset in range(-frame_radius, frame_radius + 1)
-            }
-            return tuple(sorted(frames))
         return (focus_frame,)
 
     def _cancel_pending_contour(self, silent: bool = False) -> None:
@@ -2419,8 +2508,12 @@ class MainWindow(QMainWindow):
 
     def _cancel_active_selection(self) -> None:
         self._cancel_pending_contour()
-        if self._stroke_tool == "lasso" and self._stroke_before is not None:
+        if self._stroke_tool == "grow" and self._stroke_mask is not None:
             self._clear_stroke()
+        elif self._stroke_tool == "lasso" and self._stroke_before is not None:
+            self._clear_stroke()
+        else:
+            self._clear_grow_stroke_preview()
         self._clear_lasso_3d_state()
         self._clear_lasso_overlays()
 
@@ -2578,64 +2671,10 @@ class MainWindow(QMainWindow):
         self.active_label_value = value
         self.label_panel.select_label(value)
 
-    def _grow_from_seed(self, plane: str, h: int, v: int) -> None:
-        image, mask = self.active_image, self.active_mask
-        if image is None or mask is None or not self._valid_plane_point(plane, h, v):
-            return
-        if plane in TEMPORAL_AXES:
-            self.statusBar().showMessage(self._tr("grow_temporal"), 3000)
-            return
-        self._clear_snap_feedback()
-        voxel = self._voxel_for_plane(plane, h, v)
-        x, y, z, frame = voxel
-        threshold = self._active_threshold_frame(frame)
-        if threshold is not None and not bool(threshold[x, y, z]):
-            self.statusBar().showMessage(self._tr("grow_outside_mask"), 3000)
-            return
-        before = capture_frames(mask, (frame,))
-        tolerance = float(self.grow_panel.tolerance.value())
-        seed_value = float(image.data[voxel])
-        if not np.isfinite(seed_value):
-            return
-        scope = str(self.grow_panel.scope.currentData())
-        if scope == "3d":
-            intensities = np.asarray(image.data[..., frame], dtype=np.float64)
-            labels = mask.data[..., frame]
-            candidate = np.isfinite(intensities) & (np.abs(intensities - seed_value) <= tolerance)
-            candidate &= (labels == 0) | (labels == self.active_label_value)
-            if threshold is not None:
-                candidate &= threshold
-            region = connected_seed_region(candidate, (x, y, z))
-            labels[region] = self.active_label_value
-        else:
-            context = self._plane_context(plane)
-            intensities = np.asarray(
-                self._array_plane(image.data, plane, frame, context), dtype=np.float64
-            )
-            labels = self._mutable_plane(mask, plane, frame, context)
-            candidate = np.isfinite(intensities) & (np.abs(intensities - seed_value) <= tolerance)
-            candidate &= (labels == 0) | (labels == self.active_label_value)
-            if threshold is not None:
-                candidate &= self._array_spatial_frame(threshold, plane, context)
-            region = connected_seed_region(candidate, (h, v))
-            labels[region] = self.active_label_value
-        command = build_edit_command(mask, (frame,), before, frame)
-        if command is not None:
-            mask.dirty = True
-            self._undo_stack.append(command)
-            self._undo_stack = self._undo_stack[-30:]
-            self._redo_stack.clear()
-        self._update_mask_combo_text()
-        self.refresh_views()
-        if command is not None:
-            self._refresh_3d(dirty_values=command.changed_label_values())
-        self._update_enabled_state()
-
     def _apply_morphology(self) -> None:
         mask = self.active_mask
         if mask is None or not self.active_labels:
             return
-        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         frames = (
@@ -2689,7 +2728,6 @@ class MainWindow(QMainWindow):
         mask = self.active_mask
         if mask is None or not self.active_labels:
             return
-        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         start = self.interpolation_panel.start_frame.value() - 1
@@ -2743,24 +2781,24 @@ class MainWindow(QMainWindow):
     def undo(self) -> None:
         if not self._undo_stack:
             return
-        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         command = self._undo_stack.pop()
         command.undo()
         self._redo_stack.append(command)
         self._show_command_mask(command)
+        self._refresh_3d(dirty_values=command.changed_label_values())
 
     def redo(self) -> None:
         if not self._redo_stack:
             return
-        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         command = self._redo_stack.pop()
         command.redo()
         self._undo_stack.append(command)
         self._show_command_mask(command)
+        self._refresh_3d(dirty_values=command.changed_label_values())
 
     def _show_command_mask(self, command: EditCommand) -> None:
         if self.active_image is None or not self.active_image.compatible_with(command.mask):
@@ -2907,6 +2945,10 @@ class MainWindow(QMainWindow):
     def _set_tool(self, name: str) -> None:
         previous = self.tool
         if self.tool != name:
+            if self._stroke_tool == "grow" and self._stroke_mask is not None:
+                self._clear_stroke()
+            else:
+                self._clear_grow_stroke_preview()
             self._cancel_pending_contour(silent=True)
             self._clear_lasso_overlays()
             self._clear_lasso_3d_state()
@@ -2918,11 +2960,6 @@ class MainWindow(QMainWindow):
             self.grow_dock.raise_()
         elif previous == "grow":
             self.grow_dock.hide()
-        if name == "snap_brush":
-            self.snap_brush_dock.show()
-            self.snap_brush_dock.raise_()
-        elif previous == "snap_brush":
-            self.snap_brush_dock.hide()
         if name == "lasso":
             self.lasso_dock.show()
             self.lasso_dock.raise_()
@@ -2993,7 +3030,6 @@ class MainWindow(QMainWindow):
         self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
         self.threshold_mask_action.setEnabled(has_image)
         self.grow_panel.setEnabled(has_image and has_mask)
-        self.snap_brush_panel.setEnabled(has_image and has_mask and has_label)
         self.lasso_panel.setEnabled(has_mask and has_label)
         self.morphology_panel.setEnabled(has_mask and has_label)
         self.morphology_action.setEnabled(has_mask and has_label)

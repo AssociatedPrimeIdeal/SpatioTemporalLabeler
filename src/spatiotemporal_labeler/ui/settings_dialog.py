@@ -26,7 +26,6 @@ from .render_settings import RenderSettings
 
 DEFAULT_SHORTCUTS = {
     "brush": "B",
-    "snap_brush": "N",
     "eraser": "E",
     "lasso": "S",
     "contour": "L",
@@ -43,7 +42,6 @@ DEFAULT_SHORTCUTS = {
 SHORTCUT_LABELS = {
     "en": {
         "brush": "Brush",
-        "snap_brush": "Adjacent-frame snap brush",
         "eraser": "Eraser",
         "lasso": "Scissors lasso",
         "contour": "Contour fill",
@@ -58,7 +56,6 @@ SHORTCUT_LABELS = {
     },
     "zh_CN": {
         "brush": "画笔",
-        "snap_brush": "邻帧吸附画笔",
         "eraser": "橡皮擦",
         "lasso": "剪刀套索",
         "contour": "闭合线填充",

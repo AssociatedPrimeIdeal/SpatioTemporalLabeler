@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -57,7 +57,9 @@ class ThresholdPanel(QWidget):
         self.method_label = QLabel()
         form.addRow(self.method_label, self.method)
 
-        self.lower_control = FloatSliderSpin(decimals=2)
+        self.lower_control = FloatSliderSpin(
+            decimals=2, orientation=Qt.Orientation.Vertical
+        )
         self.lower_control.set_range(0.0, 100.0)
         self.lower_control.spin.setSuffix(" %")
         self.lower_control.valueChanged.connect(self._lower_changed)
@@ -66,7 +68,9 @@ class ThresholdPanel(QWidget):
         self.lower_label = QLabel()
         form.addRow(self.lower_label, self.lower_control)
 
-        self.upper_control = FloatSliderSpin(decimals=2)
+        self.upper_control = FloatSliderSpin(
+            decimals=2, orientation=Qt.Orientation.Vertical
+        )
         self.upper_control.set_range(0.0, 100.0)
         self.upper_control.set_value(100.0)
         self.upper_control.spin.setSuffix(" %")

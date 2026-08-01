@@ -159,16 +159,15 @@ class FootprintOverlay:
         effective_tool = "eraser" if self.temporary_erase else self.tool
         color = {
             "brush": "#39d5c5",
-            "snap_brush": "#52b788",
             "eraser": "#ff6b64",
             "lasso": "#ffc857",
             "contour": "#ffd166",
             "picker": "#bda7ff",
-            "grow": "#69dc93",
+            "grow": "#39d5c5",
         }[effective_tool]
         pen = pg.mkPen(color, width=1.7)
         brush = pg.mkBrush((*pg.mkColor(color).getRgb()[:3], 28))
-        if effective_tool in {"lasso", "contour", "picker", "grow"}:
+        if effective_tool in {"lasso", "contour", "picker"}:
             width, height = self.display_spacing
             self.rectangle.setRect(
                 QRectF(center_h - width / 2.0, center_v - height / 2.0, width, height)
@@ -278,11 +277,12 @@ def threshold_overlay(
     return rgba
 
 
-def snap_feedback_overlay(selection: np.ndarray, alpha: int = 184) -> np.ndarray:
+def region_grow_preview_overlay(selection: np.ndarray) -> np.ndarray:
+    """Render the uncommitted region-grow stroke without changing labels."""
     selected = np.asarray(selection, dtype=bool)
     rgba = np.zeros((*selected.shape, 4), dtype=np.uint8)
-    rgba[..., :3][selected] = (255, 214, 64)
-    rgba[..., 3][selected] = int(np.clip(alpha, 0, 255))
+    rgba[..., :3][selected] = (57, 213, 197)
+    rgba[..., 3][selected] = 96
     return rgba
 
 
@@ -416,7 +416,7 @@ class SliceView(pg.PlotWidget):
         self.threshold_item = pg.ImageItem()
         self.applied_threshold_item = pg.ImageItem()
         self.mask_item = pg.ImageItem()
-        self.snap_feedback_item = pg.ImageItem()
+        self.region_grow_preview_item = pg.ImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
             symbol="s",
@@ -450,18 +450,18 @@ class SliceView(pg.PlotWidget):
         self.threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.applied_threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.snap_feedback_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.region_grow_preview_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.contour_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.threshold_item.setZValue(5)
         self.applied_threshold_item.setZValue(6)
         self.mask_item.setZValue(10)
-        self.snap_feedback_item.setZValue(15)
+        self.region_grow_preview_item.setZValue(15)
         self.contour_item.setZValue(20)
         self.addItem(self.image_item)
         self.addItem(self.threshold_item)
         self.addItem(self.applied_threshold_item)
         self.addItem(self.mask_item)
-        self.addItem(self.snap_feedback_item)
+        self.addItem(self.region_grow_preview_item)
         self.addItem(self.contour_item)
         self.addItem(self.crosshair_vertical)
         self.addItem(self.crosshair_horizontal)
@@ -577,7 +577,7 @@ class SliceView(pg.PlotWidget):
             self.threshold_item,
             self.applied_threshold_item,
             self.mask_item,
-            self.snap_feedback_item,
+            self.region_grow_preview_item,
         ):
             item.clear()
         self.set_contour([])
@@ -599,7 +599,6 @@ class SliceView(pg.PlotWidget):
     def set_label_overlays_visible(self, visible: bool) -> None:
         self.mask_item.setVisible(bool(visible))
         self.applied_threshold_item.setVisible(bool(visible))
-        self.snap_feedback_item.setVisible(bool(visible))
 
     def set_slice(
         self,
@@ -704,21 +703,16 @@ class SliceView(pg.PlotWidget):
         if target_rect is not None:
             self.applied_threshold_item.setRect(target_rect)
 
-    def set_snap_feedback_overlay(
-        self,
-        selection: np.ndarray | None,
-        rect: QRectF | None = None,
-    ) -> None:
+    def set_region_grow_preview(self, selection: np.ndarray | None) -> None:
         if selection is None:
-            self.snap_feedback_item.clear()
+            self.region_grow_preview_item.clear()
             return
-        self.snap_feedback_item.setImage(
-            snap_feedback_overlay(selection).transpose(1, 0, 2),
+        self.region_grow_preview_item.setImage(
+            region_grow_preview_overlay(selection).transpose(1, 0, 2),
             autoLevels=False,
         )
-        target_rect = rect if rect is not None else self._data_rect
-        if target_rect is not None:
-            self.snap_feedback_item.setRect(target_rect)
+        if self._data_rect is not None:
+            self.region_grow_preview_item.setRect(self._data_rect)
 
     def set_contour(self, points: list[tuple[int, int]]) -> None:
         if not points:
@@ -775,7 +769,6 @@ class TemporalView(pg.PlotWidget):
         self.threshold_item = pg.ImageItem()
         self.applied_threshold_item = pg.ImageItem()
         self.mask_item = pg.ImageItem()
-        self.snap_feedback_item = pg.ImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
             symbol="s",
@@ -786,12 +779,10 @@ class TemporalView(pg.PlotWidget):
         self.threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.applied_threshold_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.snap_feedback_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.contour_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.threshold_item.setZValue(5)
         self.applied_threshold_item.setZValue(6)
         self.mask_item.setZValue(10)
-        self.snap_feedback_item.setZValue(15)
         self.contour_item.setZValue(20)
         self.time_line = pg.InfiniteLine(
             angle=0,
@@ -812,7 +803,6 @@ class TemporalView(pg.PlotWidget):
         self.addItem(self.threshold_item)
         self.addItem(self.applied_threshold_item)
         self.addItem(self.mask_item)
-        self.addItem(self.snap_feedback_item)
         self.addItem(self.contour_item)
         self.addItem(self.time_line)
         self.addItem(self.spatial_line)
@@ -861,7 +851,6 @@ class TemporalView(pg.PlotWidget):
             self.threshold_item,
             self.applied_threshold_item,
             self.mask_item,
-            self.snap_feedback_item,
         ):
             item.clear()
         self.set_contour([])
@@ -879,7 +868,6 @@ class TemporalView(pg.PlotWidget):
     def set_label_overlays_visible(self, visible: bool) -> None:
         self.mask_item.setVisible(bool(visible))
         self.applied_threshold_item.setVisible(bool(visible))
-        self.snap_feedback_item.setVisible(bool(visible))
 
     def set_sequence_slice(
         self,
@@ -983,22 +971,6 @@ class TemporalView(pg.PlotWidget):
         target_rect = rect if rect is not None else self._data_rect
         if target_rect is not None:
             self.applied_threshold_item.setRect(target_rect)
-
-    def set_snap_feedback_overlay(
-        self,
-        selection: np.ndarray | None,
-        rect: QRectF | None = None,
-    ) -> None:
-        if selection is None:
-            self.snap_feedback_item.clear()
-            return
-        self.snap_feedback_item.setImage(
-            snap_feedback_overlay(selection).transpose(1, 0, 2),
-            autoLevels=False,
-        )
-        target_rect = rect if rect is not None else self._data_rect
-        if target_rect is not None:
-            self.snap_feedback_item.setRect(target_rect)
 
     def set_contour(self, points: list[tuple[int, int]]) -> None:
         if not points:
