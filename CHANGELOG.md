@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.1 - 2026-08-01
+
+### Added
+
 - Snap-brush propagation now receives a temporary yellow highlight in spatial and temporal views, with the added voxel and affected-frame counts reported in the status bar.
 
 ### Changed
