@@ -165,6 +165,9 @@ class MainWindow(QMainWindow):
         self._stroke_bounds: tuple[slice, slice, slice] | None = None
         self._stroke_tool = "brush"
         self._stroke_label_value = 1
+        self._stroke_snap_points: dict[int, tuple[int, int]] = {}
+        self._snap_feedback_mask: Sequence4D | None = None
+        self._snap_feedback_data: np.ndarray | None = None
         self._tool_before_grow = "brush"
         self._contour: list[tuple[int, int]] = []
         self._pending_contour: PendingContour | None = None
@@ -1341,6 +1344,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._cancel_pending_contour(silent=True)
+        self._clear_snap_feedback()
         self._clear_stroke()
         self._clear_lasso_3d_state()
         self._clear_lasso_overlays()
@@ -1398,6 +1402,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _active_image_changed(self, _index: int) -> None:
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._hover_status_context = None
@@ -1482,6 +1487,7 @@ class MainWindow(QMainWindow):
         event.acceptProposedAction()
 
     def _active_mask_changed(self, _index: int) -> None:
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._sync_label_panel()
@@ -1585,6 +1591,7 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
+        self._clear_snap_feedback()
         indices = np.flatnonzero(mask.data == value).astype(np.intp, copy=False)
         if indices.size:
             before = mask.data.flat[indices].copy()
@@ -1767,6 +1774,7 @@ class MainWindow(QMainWindow):
             self._global_label_opacity,
             self._applied_threshold_opacity,
         )
+        self._refresh_snap_feedback_overlays()
         self._refresh_cursor_status()
         self._sync_slider()
         self.viewer_3d.set_cursor(
@@ -1847,6 +1855,55 @@ class MainWindow(QMainWindow):
         if self._maximized_plane is None:
             self._update_image_previews(labels_only=True)
 
+    def _refresh_snap_feedback_overlays(self) -> None:
+        feedback = self._snap_feedback_data
+        if feedback is None or self._snap_feedback_mask is not self.active_mask:
+            for view in [*self.slice_views.values(), self.temporal_view]:
+                view.set_snap_feedback_overlay(None)
+            return
+        for plane, view in self.slice_views.items():
+            view.set_snap_feedback_overlay(self._extract_spatial_data(feedback, plane))
+        mode = self.temporal_mode.currentText()
+        self.temporal_view.set_snap_feedback_overlay(
+            self._extract_temporal_line(feedback, mode)
+        )
+
+    def _clear_snap_feedback(self) -> None:
+        had_feedback = self._snap_feedback_data is not None
+        self._snap_feedback_mask = None
+        self._snap_feedback_data = None
+        if had_feedback:
+            self.statusBar().clearMessage()
+        if not hasattr(self, "slice_views"):
+            return
+        for view in [*self.slice_views.values(), self.temporal_view]:
+            view.set_snap_feedback_overlay(None)
+
+    def _set_snap_feedback(self, command: EditCommand) -> tuple[int, int]:
+        changed_to_label = (
+            (command.after_values == self._stroke_label_value)
+            & (command.before_values != command.after_values)
+        )
+        if not np.any(changed_to_label):
+            self._clear_snap_feedback()
+            return 0, 0
+        selected_indices = command.flat_indices[changed_to_label]
+        selected_frames = np.unravel_index(
+            selected_indices, command.mask.data.shape
+        )[3]
+        propagated = selected_frames != self._stroke_frame
+        selected_indices = selected_indices[propagated]
+        selected_frames = selected_frames[propagated]
+        if not selected_indices.size:
+            self._clear_snap_feedback()
+            return 0, 0
+        feedback = np.zeros(command.mask.data.shape, dtype=bool)
+        feedback.flat[selected_indices] = True
+        self._snap_feedback_mask = command.mask
+        self._snap_feedback_data = feedback
+        self._refresh_snap_feedback_overlays()
+        return int(selected_indices.size), int(np.unique(selected_frames).size)
+
     def _stroke_started(
         self, plane: str, h: int, v: int, temporary_erase: bool = False
     ) -> None:
@@ -1868,6 +1925,7 @@ class MainWindow(QMainWindow):
             or (effective_tool == "contour" and self._pending_contour is not None)
         ):
             return
+        self._clear_snap_feedback()
         if temporary_erase and self._pending_contour is not None:
             self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
@@ -1989,6 +2047,7 @@ class MainWindow(QMainWindow):
     def _lasso_3d_started(self) -> None:
         if self.tool != "lasso":
             return
+        self._clear_snap_feedback()
         for view in [*self.slice_views.values(), self.temporal_view]:
             view.set_lasso([])
         mask = self.active_mask
@@ -2074,8 +2133,6 @@ class MainWindow(QMainWindow):
         if mask is None or image is None:
             return
         value = 0 if self._stroke_tool == "eraser" else self._stroke_label_value
-        start_h, start_v = self._contour[-1] if self._contour else (h, v)
-        points = raster_line((start_h, start_v), (h, v))
         spacing = self._editing_spacing(plane, image)
         if plane in TEMPORAL_AXES:
             planes = [self._mutable_plane(mask, plane, None, self._stroke_context)]
@@ -2123,68 +2180,57 @@ class MainWindow(QMainWindow):
                 self._array_plane(image.data, plane, frame, self._stroke_context)
                 for frame in self._stroke_frames
             ]
-            patch_radius = tuple(
-                max(
-                    1,
-                    int(
-                        np.ceil(
-                            self.snap_brush_panel.patch_radius.value()
-                            / axis_spacing
-                        )
-                    ),
-                )
-                for axis_spacing in spacing
-            )
-            search_radius = tuple(
-                max(
-                    0,
-                    int(
-                        np.ceil(
-                            self.snap_brush_panel.search_radius.value()
-                            / axis_spacing
-                        )
-                    ),
-                )
-                for axis_spacing in spacing
-            )
+            patch_radius_value = self.snap_brush_panel.patch_radius.value()
+            patch_radius = (patch_radius_value, patch_radius_value)
+            search_radius_value = self.snap_brush_panel.search_radius.value()
+            search_radius = (search_radius_value, search_radius_value)
             minimum_similarity = self.snap_brush_panel.minimum_similarity.value() / 100.0
-        else:
-            reference_image_plane = None
-            target_image_planes = [None] * len(planes)
-            patch_radius = (0, 0)
-            search_radius = (0, 0)
-            minimum_similarity = -1.0
-        for frame, plane_data, allowed, target_image_plane in zip(
-            self._stroke_frames, planes, allowed_planes, target_image_planes
-        ):
-            for point in points:
-                target_point = point
-                if (
-                    reference_image_plane is not None
-                    and target_image_plane is not None
-                    and frame != self._stroke_frame
-                ):
+            for frame, plane_data, allowed, target_image_plane in zip(
+                self._stroke_frames, planes, allowed_planes, target_image_planes
+            ):
+                if frame == self._stroke_frame:
+                    matched_point = (h, v)
+                else:
                     matched_point = find_similar_patch_center(
                         reference_image_plane,
                         target_image_plane,
-                        point,
+                        (h, v),
                         patch_radius,
                         search_radius,
                         minimum_similarity,
+                        allowed_centers=allowed,
                     )
-                    if matched_point is None:
-                        continue
-                    target_point = matched_point
-                affected = operation(
-                    plane_data,
-                    target_point,
-                    radius_mm,
-                    spacing,
-                    value,
-                    allowed=allowed,
-                )
-                if affected is not None:
-                    self._include_stroke_bounds(plane, affected)
+                if matched_point is None:
+                    self._stroke_snap_points.pop(frame, None)
+                    continue
+                previous_point = self._stroke_snap_points.get(frame, matched_point)
+                for target_point in raster_line(previous_point, matched_point):
+                    affected = operation(
+                        plane_data,
+                        target_point,
+                        radius_mm,
+                        spacing,
+                        value,
+                        allowed=allowed,
+                    )
+                    if affected is not None:
+                        self._include_stroke_bounds(plane, affected)
+                self._stroke_snap_points[frame] = matched_point
+        else:
+            start_h, start_v = self._contour[-1] if self._contour else (h, v)
+            points = raster_line((start_h, start_v), (h, v))
+            for plane_data, allowed in zip(planes, allowed_planes):
+                for target_point in points:
+                    affected = operation(
+                        plane_data,
+                        target_point,
+                        radius_mm,
+                        spacing,
+                        value,
+                        allowed=allowed,
+                    )
+                    if affected is not None:
+                        self._include_stroke_bounds(plane, affected)
         if not self._contour or self._contour[-1] != (h, v):
             self._contour.append((h, v))
         self._refresh_stroke_overlays()
@@ -2307,11 +2353,21 @@ class MainWindow(QMainWindow):
             self._undo_stack.append(command)
             self._undo_stack = self._undo_stack[-30:]
             self._redo_stack.clear()
+        snap_feedback = (0, 0)
+        if command is not None and self._stroke_tool == "snap_brush":
+            snap_feedback = self._set_snap_feedback(command)
         self._clear_stroke()
         if command is not None:
             self._update_mask_combo_text()
             self._refresh_3d(dirty_values=command.changed_label_values())
         self._update_enabled_state()
+        if snap_feedback[0]:
+            self.statusBar().showMessage(
+                self._tr(
+                    "snap_feedback", count=snap_feedback[0], frames=snap_feedback[1]
+                ),
+                6000,
+            )
 
     def _clear_stroke(self, keep_contour: bool = False) -> None:
         self._stroke_before = None
@@ -2322,13 +2378,18 @@ class MainWindow(QMainWindow):
         self._stroke_tool = self.tool
         self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = False
+        self._stroke_snap_points.clear()
         if not keep_contour:
             self._contour = []
 
     def _spatial_edit_frames(
         self, mask: Sequence4D, tool: str, focus_frame: int
     ) -> tuple[int, ...]:
-        if self.all_frames_toggle.isChecked() or self._all_frames_held:
+        if (
+            self.all_frames_toggle.isChecked()
+            or self._all_frames_held
+            or (tool == "snap_brush" and self.snap_brush_panel.all_frames.isChecked())
+        ):
             return tuple(range(mask.frame_count))
         if tool == "snap_brush":
             frame_radius = min(
@@ -2524,6 +2585,7 @@ class MainWindow(QMainWindow):
         if plane in TEMPORAL_AXES:
             self.statusBar().showMessage(self._tr("grow_temporal"), 3000)
             return
+        self._clear_snap_feedback()
         voxel = self._voxel_for_plane(plane, h, v)
         x, y, z, frame = voxel
         threshold = self._active_threshold_frame(frame)
@@ -2573,6 +2635,7 @@ class MainWindow(QMainWindow):
         mask = self.active_mask
         if mask is None or not self.active_labels:
             return
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         frames = (
@@ -2626,6 +2689,7 @@ class MainWindow(QMainWindow):
         mask = self.active_mask
         if mask is None or not self.active_labels:
             return
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         start = self.interpolation_panel.start_frame.value() - 1
@@ -2679,6 +2743,7 @@ class MainWindow(QMainWindow):
     def undo(self) -> None:
         if not self._undo_stack:
             return
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         command = self._undo_stack.pop()
@@ -2689,6 +2754,7 @@ class MainWindow(QMainWindow):
     def redo(self) -> None:
         if not self._redo_stack:
             return
+        self._clear_snap_feedback()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         command = self._redo_stack.pop()

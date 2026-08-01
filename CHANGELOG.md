@@ -6,9 +6,18 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Snap-brush propagation now receives a temporary yellow highlight in spatial and temporal views, with the added voxel and affected-frame counts reported in the status bar.
+
 ### Changed
 
+- The adjacent-frame snap brush now targets all temporal frames by default, while its panel can switch back to a configurable cyclic neighbor range.
+- Adjacent-frame snapping now defines patch radius and maximum displacement in pixels, uses a tighter 5 px default maximum displacement, applies distance-aware ranking, and respects an applied threshold mask for both candidate centers and final label writes.
+
 ### Fixed
+
+### Performance
+
+- Snap-brush drags now match once per target frame and mouse event, then interpolate the label path between matched endpoints instead of recomputing image similarity for every crossed voxel.
 
 ## 0.3.0 - 2026-07-31
 

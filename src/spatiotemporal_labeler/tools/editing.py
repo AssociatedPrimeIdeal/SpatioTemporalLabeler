@@ -89,6 +89,7 @@ def find_similar_patch_center(
     patch_radius: tuple[int, int],
     search_radius: tuple[int, int],
     minimum_similarity: float = -1.0,
+    allowed_centers: NDArray[np.bool_] | None = None,
 ) -> tuple[int, int] | None:
     """Return the best normalized-correlation match that clears the threshold."""
     reference_data = np.asarray(reference, dtype=np.float64)
@@ -97,6 +98,11 @@ def find_similar_patch_center(
         raise ValueError("Patch matching requires two-dimensional image planes")
     if reference_data.shape != target_data.shape:
         raise ValueError("Reference and target image planes must have the same shape")
+    allowed_data = None
+    if allowed_centers is not None:
+        allowed_data = np.asarray(allowed_centers, dtype=bool)
+        if allowed_data.shape != target_data.shape:
+            raise ValueError("Allowed centers must match the target image plane")
 
     h_center, v_center = (int(center[0]), int(center[1]))
     if not (
@@ -165,13 +171,31 @@ def find_similar_patch_center(
     candidate_h, candidate_v = np.indices(score.shape)
     candidate_h += h0
     candidate_v += v0
-    distance = (candidate_h - h_center) ** 2 + (candidate_v - v_center) ** 2
+    delta_h = candidate_h - h_center
+    delta_v = candidate_v - v_center
+    normalized_distance = np.zeros(score.shape, dtype=np.float64)
+    inside_radius = np.ones(score.shape, dtype=bool)
+    if h_search:
+        normalized_distance += (delta_h / h_search) ** 2
+    else:
+        inside_radius &= delta_h == 0
+    if v_search:
+        normalized_distance += (delta_v / v_search) ** 2
+    else:
+        inside_radius &= delta_v == 0
+    inside_radius &= normalized_distance <= 1.0 + 1e-12
+    score[~inside_radius] = np.inf
+    if allowed_data is not None:
+        score[~allowed_data[h0 : h1 + 1, v0 : v1 + 1]] = np.inf
+
+    ranking_score = score + 0.15 * normalized_distance
+    distance = delta_h**2 + delta_v**2
     order = np.lexsort(
         (
             candidate_v.ravel(),
             candidate_h.ravel(),
             distance.ravel(),
-            score.ravel(),
+            ranking_score.ravel(),
         )
     )
     if not order.size or not np.isfinite(score.ravel()[order[0]]):

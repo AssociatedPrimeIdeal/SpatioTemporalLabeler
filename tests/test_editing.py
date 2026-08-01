@@ -108,6 +108,38 @@ def test_similar_patch_center_tracks_a_local_shift_and_prefers_nearest_ties():
     )
 
     assert matched == (10, 4)
+    allowed = np.zeros(target.shape, dtype=bool)
+    assert find_similar_patch_center(
+        reference,
+        target,
+        (7, 7),
+        patch_radius=(1, 1),
+        search_radius=(5, 5),
+        minimum_similarity=0.99,
+        allowed_centers=allowed,
+    ) is None
+    allowed[10, 4] = True
+    assert find_similar_patch_center(
+        reference,
+        target,
+        (7, 7),
+        patch_radius=(1, 1),
+        search_radius=(5, 5),
+        minimum_similarity=0.99,
+        allowed_centers=allowed,
+    ) == (10, 4)
+
+    diagonal_target = np.zeros_like(reference)
+    diagonal_target[9:12, 9:12] = pattern
+    assert find_similar_patch_center(
+        reference,
+        diagonal_target,
+        (7, 7),
+        patch_radius=(1, 1),
+        search_radius=(3, 3),
+        minimum_similarity=0.99,
+    ) is None
+
     assert find_similar_patch_center(
         reference,
         target,

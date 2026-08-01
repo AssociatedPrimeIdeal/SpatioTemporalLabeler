@@ -23,22 +23,22 @@ def ensure_application():
     return application
 
 
-def make_sequence(data):
+def make_sequence(data, spacing_xyz=(1.0, 1.0, 1.0)):
     transform = AxisTransform(
         original_axis_for_canonical=(0, 1, 2, 3),
         flipped_canonical_axes=(False, False, False),
-        spacing_xyz=(1.0, 1.0, 1.0),
+        spacing_xyz=spacing_xyz,
         origin_ras=(0.0, 0.0, 0.0),
         direction_ras=np.eye(3),
     )
     return Sequence4D(np.asarray(data), {}, transform)
 
 
-def make_window(image_data, mask_data):
+def make_window(image_data, mask_data, spacing_xyz=(1.0, 1.0, 1.0)):
     ensure_application()
     window = MainWindow()
-    image = make_sequence(image_data)
-    mask = make_sequence(mask_data)
+    image = make_sequence(image_data, spacing_xyz)
+    mask = make_sequence(mask_data, spacing_xyz)
     window.images.append(image)
     window.image_combo.addItem("image")
     window.masks.append(mask)
@@ -197,16 +197,24 @@ def test_adjacent_frame_snap_brush_tracks_local_image_motion_and_all_frame_scope
     window._set_tool("snap_brush")
     assert not window.snap_brush_dock.isHidden()
     assert window.snap_brush_panel.frame_radius.value() == 1
-    assert window.snap_brush_panel.patch_radius.value() == 3.0
-    assert window.snap_brush_panel.search_radius.value() == 10.0
+    assert window.snap_brush_panel.patch_radius.value() == 3
+    assert window.snap_brush_panel.patch_radius.suffix() == " px"
+    assert window.snap_brush_panel.search_radius.value() == 5
+    assert window.snap_brush_panel.search_radius.suffix() == " px"
     assert window.snap_brush_panel.minimum_similarity.value() == 50.0
+    assert window.snap_brush_panel.all_frames.isChecked()
+    assert not window.snap_brush_panel.frame_radius.isEnabled()
+    assert window._spatial_edit_frames(mask, "snap_brush", 0) == (0, 1, 2, 3, 4)
+    assert window._spatial_edit_frames(mask, "snap_brush", 4) == (0, 1, 2, 3, 4)
+    window.snap_brush_panel.all_frames.setChecked(False)
+    assert window.snap_brush_panel.frame_radius.isEnabled()
     assert window._spatial_edit_frames(mask, "snap_brush", 0) == (0, 1, 4)
     assert window._spatial_edit_frames(mask, "snap_brush", 4) == (0, 3, 4)
     window.snap_brush_panel.frame_radius.setValue(2)
     assert window._spatial_edit_frames(mask, "snap_brush", 2) == (0, 1, 2, 3, 4)
     window.snap_brush_panel.frame_radius.setValue(1)
 
-    window.snap_brush_panel.search_radius.setValue(1.0)
+    window.snap_brush_panel.search_radius.setValue(1)
     window.snap_brush_panel.minimum_similarity.setValue(100.0)
     window._stroke_started("X-Y", 8, 9)
     window._stroke_finished("X-Y", 8, 9)
@@ -216,7 +224,7 @@ def test_adjacent_frame_snap_brush_tracks_local_image_motion_and_all_frame_scope
     assert mask.data[10, 10, 0, 3] == 0
     window.undo()
     assert not np.any(mask.data)
-    window.snap_brush_panel.search_radius.setValue(10.0)
+    window.snap_brush_panel.search_radius.setValue(5)
     window.snap_brush_panel.minimum_similarity.setValue(50.0)
 
     window._stroke_started("X-Y", 8, 9)
@@ -244,6 +252,77 @@ def test_adjacent_frame_snap_brush_tracks_local_image_motion_and_all_frame_scope
     finish_window(window, mask)
 
 
+def test_snap_brush_matches_once_per_mouse_event_and_interpolates_target_strokes(
+    monkeypatch,
+):
+    image_data = np.ones((15, 9, 1, 3), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data,
+        np.zeros(image_data.shape, dtype=np.uint8),
+        spacing_xyz=(2.5, 1.0, 1.0),
+    )
+    window.cursor = [2, 4, 0, 1]
+    window.brush_diameter.setValue(1.0)
+    window._set_tool("snap_brush")
+    matches = []
+    matching_parameters = []
+
+    def match_once(_reference, _target, center, *_args, **_kwargs):
+        matches.append(center)
+        matching_parameters.append((_args[0], _args[1], _kwargs))
+        return center
+
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.find_similar_patch_center",
+        match_once,
+    )
+
+    window._stroke_started("X-Y", 2, 4)
+    window._stroke_moved("X-Y", 10, 4)
+    window._stroke_finished("X-Y", 10, 4)
+
+    assert matches == [(2, 4), (2, 4), (10, 4), (10, 4)]
+    assert all(
+        patch_radius == (3, 3)
+        and search_radius == (5, 5)
+        and "spacing" not in keyword_arguments
+        for patch_radius, search_radius, keyword_arguments in matching_parameters
+    )
+    assert np.all(mask.data[2:11, 4, 0, :] == 1)
+    finish_window(window, mask)
+
+
+def test_snap_brush_matches_and_paints_only_inside_the_applied_threshold():
+    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
+    centers = ((5, 7), (7, 7), (9, 7))
+    pattern = np.asarray(
+        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
+        dtype=np.float32,
+    )
+    for frame, (h, v) in enumerate(centers):
+        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[5, 7, 0, 0] = True
+    threshold[7, 7, 0, 1] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.cursor = [7, 7, 0, 1]
+    window.brush_diameter.setValue(3.0)
+    window._set_tool("snap_brush")
+
+    window._stroke_started("X-Y", 7, 7)
+    window._stroke_finished("X-Y", 7, 7)
+
+    assert mask.data[5, 7, 0, 0] == 1
+    assert mask.data[7, 7, 0, 1] == 1
+    assert not np.any(mask.data[..., 2])
+    assert np.all((mask.data != 0) <= threshold)
+    finish_window(window, mask)
+
+
 def test_adjacent_frame_snap_brush_wraps_between_first_and_last_frames():
     image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
     centers = ((7, 7), (9, 7), (5, 7))
@@ -259,12 +338,74 @@ def test_adjacent_frame_snap_brush_wraps_between_first_and_last_frames():
     window.cursor = [7, 7, 0, 0]
     window.brush_diameter.setValue(1.0)
     window._set_tool("snap_brush")
+    window.snap_brush_panel.all_frames.setChecked(False)
 
     window._stroke_started("X-Y", 7, 7)
     window._stroke_finished("X-Y", 7, 7)
 
     assert all(mask.data[h, v, 0, frame] == 1 for frame, (h, v) in enumerate(centers))
     assert len(window._undo_stack) == 1
+    finish_window(window, mask)
+
+
+def test_snap_brush_highlights_only_propagated_additions_and_clears_feedback():
+    image_data = np.zeros((15, 15, 1, 3), dtype=np.float32)
+    centers = ((5, 7), (7, 7), (9, 7))
+    pattern = np.asarray(
+        [[0.0, 2.0, 0.0], [5.0, 9.0, 1.0], [0.0, 3.0, 0.0]],
+        dtype=np.float32,
+    )
+    for frame, (h, v) in enumerate(centers):
+        image_data[h - 1 : h + 2, v - 1 : v + 2, 0, frame] = pattern
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [7, 7, 0, 1]
+    window.brush_diameter.setValue(1.0)
+    window._set_tool("snap_brush")
+
+    window._stroke_started("X-Y", 7, 7)
+    window._stroke_finished("X-Y", 7, 7)
+
+    feedback = window._snap_feedback_data
+    assert window._snap_feedback_mask is mask
+    assert feedback is not None
+    assert feedback[5, 7, 0, 0]
+    assert feedback[9, 7, 0, 2]
+    assert not np.any(feedback[..., 1])
+    assert np.count_nonzero(feedback) == 2
+    assert window.statusBar().currentMessage() == window._tr(
+        "snap_feedback", count=2, frames=2
+    )
+    temporal_feedback = window.temporal_view.snap_feedback_item.image
+    assert temporal_feedback[0, 5, 3] > 0
+    assert temporal_feedback[2, 9, 3] > 0
+
+    window.cursor[3] = 0
+    window.refresh_views()
+    spatial_feedback = window.slice_views["X-Y"].snap_feedback_item.image
+    assert tuple(spatial_feedback[7, 5, :3]) == (255, 214, 64)
+    assert spatial_feedback[7, 5, 3] > 0
+
+    window.undo()
+    assert window._snap_feedback_data is None
+    assert all(
+        view.snap_feedback_item.image is None
+        for view in [*window.slice_views.values(), window.temporal_view]
+    )
+    window.redo()
+    assert window._snap_feedback_data is None
+
+    window.undo()
+    window.cursor[3] = 1
+    window._set_tool("snap_brush")
+    window._stroke_started("X-Y", 7, 7)
+    window._stroke_finished("X-Y", 7, 7)
+    assert window._snap_feedback_data is not None
+    window._set_tool("brush")
+    window._stroke_started("X-Y", 2, 2)
+    assert window._snap_feedback_data is None
+    window._stroke_finished("X-Y", 2, 2)
     finish_window(window, mask)
 
 
