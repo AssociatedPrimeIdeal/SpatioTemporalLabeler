@@ -57,6 +57,30 @@ def remove_small_components(
     return keep[components]
 
 
+def remove_small_components_4d(
+    selection: NDArray,
+    minimum_volume_mm3: float,
+    spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> NDArray[np.bool_]:
+    """按空间面邻接和相邻时间帧连接，去除整段数据中的小 4D 连通域。"""
+    binary = np.asarray(selection, dtype=bool)
+    if binary.ndim != 4:
+        raise ValueError(f"4D connected components expect a sequence, got {binary.shape}")
+    spacing = np.asarray(spacing_xyz, dtype=float)
+    if spacing.shape != (3,) or np.any(~np.isfinite(spacing)) or np.any(spacing <= 0):
+        raise ValueError("Spacing must contain three positive values")
+    threshold = max(0.0, float(minimum_volume_mm3))
+    # 4D 面邻接包含六个空间邻居和前后两个时间邻居，不把时间与空间对角相连。
+    structure = ndimage.generate_binary_structure(4, 1)
+    components, count = ndimage.label(binary, structure=structure)
+    if count == 0:
+        return np.zeros_like(binary)
+    accumulated_volumes_mm3 = np.bincount(components.ravel()) * float(np.prod(spacing))
+    keep = accumulated_volumes_mm3 >= threshold
+    keep[0] = False
+    return keep[components]
+
+
 def physical_ball(
     shape: tuple[int, ...],
     spacing_xyz: tuple[float, float, float],
@@ -136,4 +160,27 @@ def apply_label_morphology(
     for value, result in transformed.items():
         additions = result & (source == 0) & (output == 0)
         output[additions] = value
+    return output
+
+
+def apply_label_morphology_4d(
+    sequence: NDArray,
+    label_values: Iterable[int],
+    *,
+    spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    minimum_volume_mm3: float = 100.0,
+) -> np.ndarray:
+    """仅以 4D 连通性去除标签序列内跨时间累计体积过小的区域。"""
+    source = np.asarray(sequence)
+    if source.ndim != 4:
+        raise ValueError(f"4D label morphology expects a sequence, got {source.shape}")
+    values = tuple(sorted({int(value) for value in label_values if int(value) > 0}))
+    output = source.copy()
+    for value in values:
+        retained = remove_small_components_4d(
+            source == value,
+            minimum_volume_mm3,
+            spacing_xyz,
+        )
+        output[(source == value) & ~retained] = 0
     return output

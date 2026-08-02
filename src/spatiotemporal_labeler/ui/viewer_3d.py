@@ -103,6 +103,8 @@ class SurfaceState:
     origin: tuple[float, float, float]
     direction: np.ndarray
     cache_key: object
+    scene_key: object
+    scene_bounds: tuple[float, float, float, float, float, float] | None
 
 
 @dataclass(frozen=True)
@@ -310,6 +312,7 @@ class Mask3DViewer(QWidget):
         self._rendering_enabled = True
         self._display_definitions: dict[int, LabelDefinition] = {}
         self._global_opacity = 1.0
+        self._surface_opacity = 1.0
         self._surface_state: SurfaceState | None = None
         self._rendered_cache_key: object | None = None
         self._surface_generation = 0
@@ -356,6 +359,7 @@ class Mask3DViewer(QWidget):
 
         self._pending: SurfaceRequest | None = None
         self._has_camera = False
+        self._camera_scene_key: object | None = None
         self._initialized = False
         self._cursor_state: tuple[float, float, float, float] | None = None
         self._last_cursor_render_time = 0.0
@@ -370,6 +374,11 @@ class Mask3DViewer(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(self._throttle_ms)
         self._timer.timeout.connect(self._apply_pending)
+        self._refine_state: SurfaceState | None = None
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(220)
+        self._refine_timer.timeout.connect(self._refine_latest_surface)
 
     def _build_lasso_actors(self) -> None:
         color = (1.0, 0.78, 0.34)
@@ -507,6 +516,7 @@ class Mask3DViewer(QWidget):
         self._surface_generation += 1
         self._rendering_enabled = False
         self._timer.stop()
+        self._refine_timer.stop()
         self._cursor_timer.stop()
         self._pending = None
         self._thread_pool.clear()
@@ -758,7 +768,13 @@ class Mask3DViewer(QWidget):
             material = pipeline.actor.GetProperty()
             material.SetColor(red, green, blue)
             material.SetOpacity(
-                float(np.clip(definition.opacity * self._global_opacity, 0.0, 1.0))
+                float(
+                    np.clip(
+                        definition.opacity * self._global_opacity * self._surface_opacity,
+                        0.0,
+                        1.0,
+                    )
+                )
             )
             material.SetInterpolationToPhong()
             material.SetAmbient(preset["ambient"])
@@ -789,8 +805,17 @@ class Mask3DViewer(QWidget):
         self._cursor_timer.stop()
         self._last_cursor_render_time = monotonic()
 
-    def _frame_camera(self) -> None:
-        self.renderer.ResetCamera()
+    def _frame_camera(
+        self, bounds: tuple[float, float, float, float, float, float] | None = None
+    ) -> None:
+        if bounds is None:
+            self.renderer.ResetCamera()
+        else:
+            numeric_bounds = np.asarray(bounds, dtype=float)
+            if numeric_bounds.shape != (6,) or not np.all(np.isfinite(numeric_bounds)):
+                self.renderer.ResetCamera()
+            else:
+                self.renderer.ResetCamera(tuple(map(float, numeric_bounds)))
         self.renderer.GetActiveCamera().Zoom(1.30)
         self._reset_camera_clipping_range()
 
@@ -836,6 +861,8 @@ class Mask3DViewer(QWidget):
         self._rendering_enabled = enabled
         self._surface_generation += 1
         self._timer.stop()
+        self._refine_timer.stop()
+        self._refine_state = None
         self._pending = None
         self._rendered_cache_key = None
         self._lasso_enabled = self._lasso_requested and enabled
@@ -900,6 +927,9 @@ class Mask3DViewer(QWidget):
         global_opacity: float = 1.0,
         dirty_values: set[int] | frozenset[int] | None = None,
         cache_key: object | None = None,
+        scene_key: object | None = None,
+        scene_bounds: tuple[float, float, float, float, float, float] | None = None,
+        interactive: bool = False,
     ) -> None:
         if frame is None:
             self._surface_generation += 1
@@ -907,6 +937,10 @@ class Mask3DViewer(QWidget):
             self._pending = None
             self._surface_state = None
             self._rendered_cache_key = None
+            self._has_camera = False
+            self._camera_scene_key = None
+            self._refine_timer.stop()
+            self._refine_state = None
             self._display_definitions.clear()
             for pipeline in self.segment_pipelines.values():
                 pipeline.actor.SetVisibility(False)
@@ -934,29 +968,79 @@ class Mask3DViewer(QWidget):
         }
         self._global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
         self._apply_actor_styles()
+        state_cache_key = cache_key if cache_key is not None else ("array", id(frame))
         state = SurfaceState(
             np.asarray(frame).copy() if self._rendering_enabled else np.asarray(frame),
             tuple(map(float, spacing or (1.0, 1.0, 1.0))),
             tuple(map(float, origin or (0.0, 0.0, 0.0))),
             np.asarray(direction if direction is not None else np.eye(3), dtype=float).copy(),
-            cache_key if cache_key is not None else ("array", id(frame)),
+            state_cache_key,
+            scene_key if scene_key is not None else state_cache_key,
+            scene_bounds,
         )
         self._surface_state = state
         if not self._rendering_enabled:
             return
+        self._refine_timer.stop()
+        self._refine_state = None
         visible_values = self._visible_values()
         requested_values = (
             visible_values
             if dirty_values is None or state.cache_key != self._rendered_cache_key
             else frozenset(int(value) for value in dirty_values if int(value) in visible_values)
         )
-        self._queue_surface_request(state, requested_values, immediate)
+        request_settings = (
+            self._interactive_render_settings() if interactive else self.render_settings
+        )
+        self._queue_surface_request(
+            state,
+            requested_values,
+            immediate,
+            settings=request_settings,
+            prioritize=interactive,
+        )
+        if interactive and request_settings != self.render_settings:
+            self._refine_state = state
+            self._refine_timer.start()
+
+    def _interactive_render_settings(self) -> RenderSettings:
+        """时间拖动时先用无平滑的高抽稀网格，保证最新帧能尽快显示。"""
+        return RenderSettings(
+            style=self.render_settings.style,
+            lighting=self.render_settings.lighting,
+            smoothing=0,
+            detail="performance",
+        )
+
+    def _refine_latest_surface(self) -> None:
+        """时间导航停下后仅细化最新帧，避免旧帧占用交互渲染队列。"""
+        state = self._refine_state
+        self._refine_state = None
+        if (
+            state is None
+            or state is not self._surface_state
+            or not self._rendering_enabled
+        ):
+            return
+        if self._active_request is not None or self._pending is not None:
+            # 先让快速请求落地；否则新的细化请求会使它成为过期结果。
+            self._refine_state = state
+            self._refine_timer.start(80)
+            return
+        self._queue_surface_request(
+            state,
+            self._visible_values(),
+            immediate=False,
+            settings=self.render_settings,
+        )
 
     def _queue_surface_request(
         self,
         state: SurfaceState,
         values: frozenset[int],
         immediate: bool,
+        settings: RenderSettings | None = None,
+        prioritize: bool = False,
     ) -> None:
         if not self._rendering_enabled:
             return
@@ -970,7 +1054,7 @@ class Mask3DViewer(QWidget):
             self._surface_generation,
             state,
             frozenset(combined_values),
-            self.render_settings,
+            settings or self.render_settings,
         )
         self._pending = request
         if not request.values:
@@ -996,6 +1080,9 @@ class Mask3DViewer(QWidget):
             )
             return
         if self._active_request is not None:
+            return
+        if prioritize:
+            self._timer.start(0)
             return
         elapsed_ms = (monotonic() - self._last_apply_time) * 1000.0
         if not self._timer.isActive():
@@ -1077,10 +1164,11 @@ class Mask3DViewer(QWidget):
             if pipeline.actor.GetVisibility()
         ]
         if visible and (
-            not self._has_camera or request.state.cache_key != self._rendered_cache_key
+            not self._has_camera or request.state.scene_key != self._camera_scene_key
         ):
-            self._frame_camera()
+            self._frame_camera(request.state.scene_bounds)
             self._has_camera = True
+            self._camera_scene_key = request.state.scene_key
         else:
             self._reset_camera_clipping_range()
         if self._initialized:
@@ -1111,6 +1199,13 @@ class Mask3DViewer(QWidget):
         self._global_opacity = float(np.clip(global_opacity, 0.0, 1.0))
         self._apply_actor_styles()
         if self._initialized and self._rendering_enabled:
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def set_surface_opacity(self, opacity: float, render: bool = True) -> None:
+        """设置只作用于 3D 表面的全局透明度，不改变 2D 标签叠加。"""
+        self._surface_opacity = float(np.clip(opacity, 0.0, 1.0))
+        self._apply_actor_styles()
+        if render and self._initialized and self._rendering_enabled:
             self.vtk_widget.GetRenderWindow().Render()
 
     def set_label_opacities(

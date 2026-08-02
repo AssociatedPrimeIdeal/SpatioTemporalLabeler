@@ -4,7 +4,9 @@ import numpy as np
 
 from spatiotemporal_labeler.tools import (
     apply_label_morphology,
+    apply_label_morphology_4d,
     remove_small_components,
+    remove_small_components_4d,
 )
 
 
@@ -88,6 +90,30 @@ def test_component_threshold_uses_physical_volume_for_anisotropic_data():
 
     assert not result[1, 1, 0]
     assert np.all(result[3, 3, :])
+
+
+def test_remove_small_components_4d_accumulates_volume_over_time():
+    selection = np.zeros((6, 6, 1, 3), dtype=bool)
+    selection[1, 1, 0, :] = True
+    selection[4, 4, 0, 1] = True
+
+    result = remove_small_components_4d(selection, minimum_volume_mm3=2.0)
+
+    assert np.all(result[1, 1, 0, :])
+    assert not result[4, 4, 0, 1]
+
+
+def test_4d_component_removal_preserves_unselected_labels():
+    sequence = np.zeros((6, 6, 1, 2), dtype=np.uint8)
+    sequence[1, 1, 0, :] = 1
+    sequence[4, 4, 0, 0] = 2
+
+    result = apply_label_morphology_4d(
+        sequence, [1], minimum_volume_mm3=3.0
+    )
+
+    assert not np.any(result == 1)
+    assert result[4, 4, 0, 0] == 2
 
 
 def test_physical_radius_does_not_cross_a_thick_slice_gap():

@@ -865,7 +865,7 @@ def test_morphology_respects_selected_label_and_current_frame_and_undoes():
     assert np.array_equal(mask.data, original)
 
     window.morphology_panel.labels_scope.setCurrentIndex(1)
-    window.morphology_panel.frames_scope.setCurrentIndex(1)
+    window.morphology_panel.component_scope.setCurrentIndex(1)
     window._apply_morphology()
     assert np.all(mask.data[5, 5, 0, :] == 0)
     assert np.all(mask.data[6, 0, 0, :] == 0)
@@ -1051,11 +1051,11 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     assert window.threshold_panel.lower.singleStep() == 0.01
     assert window.threshold_panel.lower_slider.maximum() == 10_000
     assert window.threshold_panel.lower_slider.orientation() == Qt.Orientation.Vertical
-    assert window.grow_panel.tolerance_control.slider.orientation() == Qt.Orientation.Vertical
+    assert window.grow_panel.tolerance_control.slider.orientation() == Qt.Orientation.Horizontal
     assert window.grow_panel.tolerance.minimum() == 0.0
     assert window.grow_panel.tolerance.maximum() == 10.0
     assert window.grow_panel.tolerance.value() == 0.5
-    assert window.grow_panel.max_displacement_control.slider.orientation() == Qt.Orientation.Vertical
+    assert window.grow_panel.max_displacement_control.slider.orientation() == Qt.Orientation.Horizontal
     assert window.grow_panel.motion_smoothness.value() == 1.0
     assert window.grow_panel.max_motion_change.value() == 2.4
     assert window.grow_panel.max_motion_change.suffix() == " mm"
@@ -1081,7 +1081,7 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     finish_window(window, mask)
 
 
-def test_vertical_slider_tracks_expand_with_their_panels():
+def test_temporal_sliders_are_horizontal_while_threshold_tracks_stay_vertical():
     app = ensure_application()
     grow_panel = RegionGrowPanel()
     threshold_panel = ThresholdPanel()
@@ -1095,8 +1095,8 @@ def test_vertical_slider_tracks_expand_with_their_panels():
     displacement_slider = grow_panel.max_displacement_control.slider
     threshold_lower = threshold_panel.lower_slider
     threshold_upper = threshold_panel.upper_slider
-    assert grow_slider.height() > 128
-    assert displacement_slider.height() > 128
+    assert grow_slider.width() > 128
+    assert displacement_slider.width() > 128
     assert threshold_lower.height() > 128
     assert threshold_upper.height() > 128
     assert threshold_panel.lower.height() < threshold_lower.height()
@@ -1105,6 +1105,26 @@ def test_vertical_slider_tracks_expand_with_their_panels():
     threshold_panel.close()
     grow_panel.deleteLater()
     threshold_panel.deleteLater()
+
+
+def test_morphology_4d_scope_keeps_components_connected_across_time():
+    image_data = np.ones((7, 7, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[1, 1, 0, :] = 1
+    mask_data[5, 5, 0, 1] = 1
+    window, _image, mask = make_window(image_data, mask_data)
+    window.active_label_value = 1
+    window.morphology_panel.minimum_volume.setValue(2.0)
+    window.morphology_panel.component_scope.setCurrentIndex(
+        window.morphology_panel.component_scope.findData("whole_4d")
+    )
+
+    window._apply_morphology()
+
+    assert np.all(mask.data[1, 1, 0, :] == 1)
+    assert mask.data[5, 5, 0, 1] == 0
+    assert len(window._undo_stack) == 1
+    finish_window(window, mask)
 
 
 def test_selecting_threshold_method_calculates_without_a_button():
@@ -1394,6 +1414,24 @@ def test_3d_viewer_builds_one_binary_surface_actor_per_label():
     viewer.deleteLater()
 
 
+def test_3d_viewer_surface_opacity_is_independent_from_label_opacity():
+    ensure_application()
+    viewer = Mask3DViewer()
+    frame = np.zeros((6, 6, 6), dtype=np.uint8)
+    frame[1:5, 1:5, 1:5] = 1
+    labels = {1: default_label(1)}
+    labels[1].opacity = 0.8
+
+    viewer.set_surface_opacity(0.25, render=False)
+    viewer.set_mask(frame, labels=labels, immediate=True, global_opacity=0.5)
+
+    assert np.isclose(
+        viewer.segment_pipelines[1].actor.GetProperty().GetOpacity(), 0.1
+    )
+    viewer.close()
+    viewer.deleteLater()
+
+
 def test_3d_viewer_rebuilds_only_dirty_labels(monkeypatch):
     ensure_application()
     viewer = Mask3DViewer()
@@ -1447,6 +1485,71 @@ def test_3d_viewer_discards_stale_background_results():
 
         viewer._apply_surface_result(current_request, {}, 1.0)
         assert viewer._rendered_cache_key == ("mask", 1)
+    finally:
+        viewer.close()
+        viewer.deleteLater()
+
+
+def test_3d_viewer_keeps_camera_fixed_for_frames_on_the_same_grid():
+    ensure_application()
+    viewer = Mask3DViewer()
+    first = np.zeros((8, 8, 8), dtype=np.uint8)
+    first[1:3, 1:3, 1:3] = 1
+    second = np.zeros_like(first)
+    second[5:7, 5:7, 5:7] = 1
+    labels = {1: default_label(1)}
+    scene_key = ("mask", "spatial-grid")
+    scene_bounds = (-0.5, 7.5, -0.5, 7.5, -0.5, 7.5)
+    try:
+        viewer.set_mask(
+            first,
+            labels=labels,
+            immediate=True,
+            cache_key=("mask", 0),
+            scene_key=scene_key,
+            scene_bounds=scene_bounds,
+        )
+        camera = viewer.renderer.GetActiveCamera()
+        first_state = (
+            np.asarray(camera.GetPosition()),
+            np.asarray(camera.GetFocalPoint()),
+            camera.GetParallelScale(),
+        )
+
+        viewer.set_mask(
+            second,
+            labels=labels,
+            immediate=True,
+            cache_key=("mask", 1),
+            scene_key=scene_key,
+            scene_bounds=scene_bounds,
+        )
+
+        assert np.allclose(camera.GetPosition(), first_state[0])
+        assert np.allclose(camera.GetFocalPoint(), first_state[1])
+        assert camera.GetParallelScale() == first_state[2]
+    finally:
+        viewer.close()
+        viewer.deleteLater()
+
+
+def test_3d_viewer_uses_a_fast_mesh_while_time_navigation_is_active():
+    ensure_application()
+    viewer = Mask3DViewer()
+    frame = np.zeros((8, 8, 8), dtype=np.uint8)
+    frame[1:7, 1:7, 1:7] = 1
+    try:
+        viewer.set_mask(
+            frame,
+            labels={1: default_label(1)},
+            cache_key=("mask", 1),
+            interactive=True,
+        )
+        viewer._timer.stop()
+        request = viewer._pending
+        assert request is not None
+        assert request.settings.smoothing == 0
+        assert request.settings.detail == "performance"
     finally:
         viewer.close()
         viewer.deleteLater()

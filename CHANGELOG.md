@@ -6,7 +6,12 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Small-component removal now offers current-frame 3D, each-frame 3D, and whole-sequence 4D scopes. The 4D mode preserves components connected through adjacent time points and measures their accumulated spatial volume.
+
 ### Changed
+
+- Temporal-propagation intensity-tolerance and maximum-displacement controls are horizontal again.
+- 3D rendering now keeps one camera reference for every frame on the same spatial grid, has a dedicated persisted opacity control, and uses a fast mesh while navigating time before refining the final frame.
 
 ### Fixed
 

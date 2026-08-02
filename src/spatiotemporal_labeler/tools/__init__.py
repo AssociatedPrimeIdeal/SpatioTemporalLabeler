@@ -13,7 +13,9 @@ from .intensity import strongest_signal_frame
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
     apply_label_morphology,
+    apply_label_morphology_4d,
     remove_small_components,
+    remove_small_components_4d,
 )
 from .region_growing import RegionGrowConfig, RegionGrowResult, grow_region_4d
 from .thresholding import (
@@ -34,6 +36,7 @@ __all__ = [
     "apply_disk",
     "apply_square",
     "apply_label_morphology",
+    "apply_label_morphology_4d",
     "automatic_thresholds",
     "build_threshold_mask",
     "connected_seed_region",
@@ -41,6 +44,7 @@ __all__ = [
     "interpolate_label_frames",
     "kittler_threshold",
     "remove_small_components",
+    "remove_small_components_4d",
     "RegionGrowConfig",
     "RegionGrowResult",
     "polygon_selection",

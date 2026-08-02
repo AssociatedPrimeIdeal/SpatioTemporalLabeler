@@ -17,8 +17,8 @@ DETAIL_REDUCTION = {
 class RenderSettings:
     style: str = "clinical"
     lighting: int = 100
-    smoothing: int = 8
-    detail: str = "balanced"
+    smoothing: int = 0
+    detail: str = "performance"
 
     @classmethod
     def normalized(cls, values: Mapping[str, object] | None = None) -> RenderSettings:

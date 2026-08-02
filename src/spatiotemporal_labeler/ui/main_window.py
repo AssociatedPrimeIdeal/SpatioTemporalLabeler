@@ -58,6 +58,7 @@ from spatiotemporal_labeler.tools import (
     GLOBAL_METHODS,
     apply_disk,
     apply_label_morphology,
+    apply_label_morphology_4d,
     apply_square,
     automatic_thresholds,
     build_threshold_mask,
@@ -118,12 +119,11 @@ class MainWindow(QMainWindow):
             key: str(self.settings.value(f"shortcuts/{key}", value))
             for key, value in DEFAULT_SHORTCUTS.items()
         }
+        render_defaults = RenderSettings().as_dict()
         self.render_settings = RenderSettings.normalized(
             {
-                "style": self.settings.value("render3d/style", "clinical"),
-                "lighting": self.settings.value("render3d/lighting", 100),
-                "smoothing": self.settings.value("render3d/smoothing", 8),
-                "detail": self.settings.value("render3d/detail", "balanced"),
+                key: self.settings.value(f"render3d/{key}", value)
+                for key, value in render_defaults.items()
             }
         )
         self.resize(1680, 960)
@@ -147,6 +147,9 @@ class MainWindow(QMainWindow):
         self._applied_threshold_opacity = 1.0
         self._global_label_opacity = float(
             np.clip(float(self.settings.value("labels/global_opacity", 1.0)), 0.0, 1.0)
+        )
+        self._render_3d_opacity = float(
+            np.clip(float(self.settings.value("render3d/opacity", 1.0)), 0.0, 1.0)
         )
         self._all_frames_held = False
         self._picker_held = False
@@ -318,11 +321,22 @@ class MainWindow(QMainWindow):
         self.render_toggle.setChecked(True)
         self.render_toggle.toggled.connect(self._rendering_toggled)
         render_header_layout.addWidget(self.render_toggle)
+        self.render_opacity_label = QLabel()
+        self.render_opacity_label.setObjectName("viewerOpacity")
+        render_header_layout.addWidget(self.render_opacity_label)
+        self.render_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.render_opacity.setRange(0, 100)
+        self.render_opacity.setValue(round(self._render_3d_opacity * 100.0))
+        self.render_opacity.setMinimumWidth(96)
+        self.render_opacity.setMaximumWidth(132)
+        self.render_opacity.valueChanged.connect(self._render_3d_opacity_changed)
+        render_header_layout.addWidget(self.render_opacity)
         render_layout.addWidget(render_header)
         self.viewer_3d = Mask3DViewer()
         self.viewer_3d.lassoStarted.connect(self._lasso_3d_started)
         self.viewer_3d.lassoFinished.connect(self._lasso_3d_finished)
         self.viewer_3d.renderFailed.connect(self._render_failed)
+        self.viewer_3d.set_surface_opacity(self._render_3d_opacity, render=False)
         render_layout.addWidget(self.viewer_3d, 1)
         splitter.addWidget(render_panel)
         splitter.setStretchFactor(0, 0)
@@ -689,6 +703,10 @@ class MainWindow(QMainWindow):
         self.render_title.setText(self._tr("render_3d"))
         self.render_toggle.setText(self._tr("render_enabled"))
         self.render_toggle.setToolTip(self._tr("render_enabled_tip"))
+        self.render_opacity_label.setText(
+            self._tr("render_opacity", value=round(self._render_3d_opacity * 100.0))
+        )
+        self.render_opacity.setToolTip(self._tr("render_opacity_tip"))
         self.viewer_3d.setToolTip(self._tr("viewer_3d_tip"))
         self.slider_axis_label.setText(self._tr("slider_axis"))
         self.slider_axis.setItemText(0, f"T {self._tr('time')}")
@@ -1514,6 +1532,15 @@ class MainWindow(QMainWindow):
         if enabled:
             self._refresh_3d()
 
+    def _render_3d_opacity_changed(self, value: int) -> None:
+        self._render_3d_opacity = float(np.clip(value / 100.0, 0.0, 1.0))
+        self.settings.setValue("render3d/opacity", self._render_3d_opacity)
+        self.viewer_3d.set_surface_opacity(self._render_3d_opacity)
+        if hasattr(self, "render_opacity_label"):
+            self.render_opacity_label.setText(
+                self._tr("render_opacity", value=round(self._render_3d_opacity * 100.0))
+            )
+
     def _render_failed(self, message: str) -> None:
         self.statusBar().showMessage(self._tr("render_failed", message=message), 6000)
 
@@ -1798,6 +1825,8 @@ class MainWindow(QMainWindow):
             global_opacity=self._global_label_opacity,
             dirty_values=dirty_values,
             cache_key=(id(mask), self.cursor[3]),
+            scene_key=self._mask_scene_key(mask),
+            scene_bounds=self._mask_scene_bounds(mask),
         )
 
     def _refresh_navigation_3d(self) -> None:
@@ -1814,6 +1843,49 @@ class MainWindow(QMainWindow):
             immediate=False,
             global_opacity=self._global_label_opacity,
             cache_key=(id(mask), self.cursor[3]),
+            scene_key=self._mask_scene_key(mask),
+            scene_bounds=self._mask_scene_bounds(mask),
+            interactive=True,
+        )
+
+    @staticmethod
+    def _mask_scene_key(mask: Sequence4D) -> tuple[object, ...]:
+        """以空间网格而非时间帧标识一个固定的 3D 相机参考系。"""
+        return (
+            id(mask),
+            tuple(map(int, mask.data.shape[:3])),
+            tuple(map(float, mask.spacing_xyz)),
+            tuple(map(float, mask.transform.origin_ras)),
+            tuple(map(float, np.asarray(mask.transform.direction_ras).ravel())),
+        )
+
+    @staticmethod
+    def _mask_scene_bounds(mask: Sequence4D) -> tuple[float, float, float, float, float, float]:
+        """返回覆盖整个空间网格的 RAS 轴对齐边界，供各时间帧共用相机。"""
+        shape = np.asarray(mask.data.shape[:3], dtype=float)
+        lower = np.full(3, -0.5, dtype=float)
+        upper = shape - 0.5
+        voxel_corners = np.asarray(
+            [
+                (x, y, z)
+                for x in (lower[0], upper[0])
+                for y in (lower[1], upper[1])
+                for z in (lower[2], upper[2])
+            ],
+            dtype=float,
+        )
+        world_corners = np.asarray(mask.transform.origin_ras, dtype=float) + (
+            np.asarray(mask.transform.direction_ras, dtype=float)
+            @ (voxel_corners * np.asarray(mask.spacing_xyz, dtype=float)).T
+        ).T
+        minimum, maximum = world_corners.min(axis=0), world_corners.max(axis=0)
+        return (
+            float(minimum[0]),
+            float(maximum[0]),
+            float(minimum[1]),
+            float(maximum[1]),
+            float(minimum[2]),
+            float(maximum[2]),
         )
 
     def _refresh_label_overlays(self) -> None:
@@ -2683,30 +2755,51 @@ class MainWindow(QMainWindow):
             return
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
-        frames = (
-            tuple(range(mask.frame_count))
-            if self.morphology_panel.frames_scope.currentData() == "all"
-            else (self.cursor[3],)
-        )
         label_values = (
             tuple(sorted(self.active_labels))
             if self.morphology_panel.labels_scope.currentData() == "all"
             else (self.active_label_value,)
         )
-        before = capture_frames(mask, frames)
         operation = str(self.morphology_panel.operation.currentData())
+        component_scope = str(self.morphology_panel.component_scope.currentData())
+        use_whole_sequence_4d = (
+            operation == "remove_small_components" and component_scope == "whole_4d"
+        )
+        if use_whole_sequence_4d:
+            frames = tuple(range(mask.frame_count))
+        elif operation == "remove_small_components":
+            frames = (
+                tuple(range(mask.frame_count))
+                if component_scope == "each_3d"
+                else (self.cursor[3],)
+            )
+        else:
+            frames = (
+                tuple(range(mask.frame_count))
+                if self.morphology_panel.frames_scope.currentData() == "all"
+                else (self.cursor[3],)
+            )
+        before = capture_frames(mask, frames)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            for frame in frames:
-                mask.data[..., frame] = apply_label_morphology(
-                    mask.data[..., frame],
-                    operation,
+            if use_whole_sequence_4d:
+                mask.data[...] = apply_label_morphology_4d(
+                    mask.data,
                     label_values,
                     spacing_xyz=mask.spacing_xyz,
                     minimum_volume_mm3=self.morphology_panel.minimum_volume.value(),
-                    connectivity=int(self.morphology_panel.connectivity.currentData()),
-                    radius_mm=self.morphology_panel.radius.value(),
                 )
+            else:
+                for frame in frames:
+                    mask.data[..., frame] = apply_label_morphology(
+                        mask.data[..., frame],
+                        operation,
+                        label_values,
+                        spacing_xyz=mask.spacing_xyz,
+                        minimum_volume_mm3=self.morphology_panel.minimum_volume.value(),
+                        connectivity=int(self.morphology_panel.connectivity.currentData()),
+                        radius_mm=self.morphology_panel.radius.value(),
+                    )
         except Exception as error:
             restore_frames(mask, frames, before)
             QMessageBox.critical(self, self._tr("morphology_failed"), str(error))

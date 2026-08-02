@@ -23,14 +23,14 @@ class RegionGrowPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         form = QFormLayout()
         self.tolerance_control = FloatSliderSpin(
-            decimals=4, orientation=Qt.Orientation.Vertical
+            decimals=4, orientation=Qt.Orientation.Horizontal
         )
         self.tolerance = self.tolerance_control.spin
         self.tolerance_label = QLabel()
         form.addRow(self.tolerance_label, self.tolerance_control)
         # 最大物理位移与强度容差均提供滑条和精确数值输入。
         self.max_displacement_control = FloatSliderSpin(
-            decimals=2, orientation=Qt.Orientation.Vertical
+            decimals=2, orientation=Qt.Orientation.Horizontal
         )
         self.max_displacement_control.set_range(0.0, 100.0)
         self.max_displacement = self.max_displacement_control.spin
