@@ -22,6 +22,8 @@ class RegionGrowConfig:
 
     tolerance: float
     max_displacement_mm: float = 4.8
+    motion_smoothness: float = 1.0
+    max_motion_change_mm: float = 2.4
     temporal_radius: int | None = None
     replace_other_labels: bool = False
     max_changed_voxels: int = 500_000
@@ -34,6 +36,13 @@ class RegionGrowConfig:
             or self.max_displacement_mm < 0
         ):
             raise ValueError("Maximum displacement must be a finite non-negative value")
+        if not np.isfinite(self.motion_smoothness) or self.motion_smoothness < 0:
+            raise ValueError("Motion smoothness must be a finite non-negative value")
+        if (
+            not np.isfinite(self.max_motion_change_mm)
+            or self.max_motion_change_mm < 0
+        ):
+            raise ValueError("Maximum motion change must be a finite non-negative value")
         if self.temporal_radius is not None and self.temporal_radius < 0:
             raise ValueError("Temporal radius must be non-negative or None")
         if self.max_changed_voxels < 1:
@@ -121,6 +130,16 @@ def _temporal_offsets(
     return np.asarray([offset[1:] for offset in offsets], dtype=np.intp)
 
 
+def _median_motion(
+    motions: list[NDArray[np.float64]],
+) -> NDArray[np.float64] | None:
+    """返回笔画匹配的稳健公共物理位移，单位为毫米。"""
+
+    if not motions:
+        return None
+    return np.median(np.asarray(motions, dtype=np.float64), axis=0)
+
+
 def grow_region_4d(
     image: NDArray[np.number],
     labels: NDArray[np.integer],
@@ -137,9 +156,10 @@ def grow_region_4d(
     The starting frame accepts only valid stroke seeds.  For each neighboring
     frame, every source voxel independently selects its best finite candidate
     inside the physical displacement window, provided its raw intensity changes
-    by no more than ``config.tolerance``.  A target can be selected by
-    multiple sources but is accepted once; this permits the patch to shrink or
-    deform without ever increasing through same-frame flood filling.
+    by no more than ``config.tolerance``. Later frame pairs constrain candidate
+    motion against the previous pair's median motion. A target can be selected
+    by multiple sources but is accepted once; this permits the patch to shrink
+    or deform without ever increasing through same-frame flood filling.
     """
 
     image_data = np.asarray(image)
@@ -253,10 +273,13 @@ def grow_region_4d(
     accepted_by_time: dict[int, NDArray[np.bool_]] = {stroke_time: source}
 
     def best_match(
-        parent: tuple[int, int, int], source_time: int, target_time: int
+        parent: tuple[int, int, int],
+        source_time: int,
+        target_time: int,
+        expected_motion_mm: NDArray[np.float64] | None,
     ) -> tuple[int, int, int] | None:
         source_value = float(raw_image[parent + (source_time,)])
-        best_key: tuple[float, int, int, int] | None = None
+        best_key: tuple[float, ...] | None = None
         best_coordinate: tuple[int, int, int] | None = None
         for offset in offsets:
             coordinate = tuple(int(parent[axis] + offset[axis]) for axis in range(3))
@@ -270,7 +293,29 @@ def grow_region_4d(
             )
             if difference > config.tolerance:
                 continue
-            key = (difference, *(abs(int(value)) for value in offset))
+            motion_deviation = 0.0
+            motion_cost = 0.0
+            if expected_motion_mm is not None and config.motion_smoothness > 0.0:
+                offset_mm = np.asarray(offset, dtype=np.float64) * spacing
+                motion_deviation = float(np.linalg.norm(offset_mm - expected_motion_mm))
+                if (
+                    motion_deviation
+                    > config.max_motion_change_mm + _DISPLACEMENT_EPSILON
+                ):
+                    continue
+                if config.max_motion_change_mm > _DISPLACEMENT_EPSILON:
+                    motion_cost = config.motion_smoothness * (
+                        motion_deviation / config.max_motion_change_mm
+                    ) ** 2
+            intensity_cost = (
+                0.0 if config.tolerance == 0.0 else difference / config.tolerance
+            )
+            key = (
+                intensity_cost + motion_cost,
+                difference,
+                motion_deviation,
+                *(abs(int(value)) for value in offset),
+            )
             if best_key is None or key < best_key:
                 best_key = key
                 best_coordinate = coordinate
@@ -282,14 +327,40 @@ def grow_region_4d(
     for direction in (1, -1):
         source_time = stroke_time
         source_result = source
+        previous_motion_mm: NDArray[np.float64] | None = None
         for _step in range(max_steps):
             target_time = source_time + direction
             if target_time < 0 or target_time >= image_roi.shape[3]:
                 break
+            parents = [
+                tuple(int(value) for value in parent_array)
+                for parent_array in np.argwhere(source_result)
+            ]
+            expected_motion_mm = previous_motion_mm
+            if expected_motion_mm is None and config.motion_smoothness > 0.0:
+                provisional_motions = [
+                    (
+                        np.asarray(candidate, dtype=np.float64)
+                        - np.asarray(parent, dtype=np.float64)
+                    )
+                    * spacing
+                    for parent in parents
+                    if (
+                        candidate := best_match(
+                            parent, source_time, target_time, None
+                        )
+                    )
+                    is not None
+                ]
+                # 首对帧没有历史运动时，用完整笔画的多数位移抑制跨血管跳跃。
+                if len(provisional_motions) >= 3:
+                    expected_motion_mm = _median_motion(provisional_motions)
             target = np.zeros(spatial_shape, dtype=bool)
-            for parent_array in np.argwhere(source_result):
-                parent = tuple(int(value) for value in parent_array)
-                candidate = best_match(parent, source_time, target_time)
+            accepted_motions: list[NDArray[np.float64]] = []
+            for parent in parents:
+                candidate = best_match(
+                    parent, source_time, target_time, expected_motion_mm
+                )
                 if candidate is None or target[candidate]:
                     continue
                 if not record_change(candidate, target_time):
@@ -300,9 +371,17 @@ def grow_region_4d(
                         abort_reason=_SAFETY_ABORT_REASON,
                     )
                 target[candidate] = True
+                accepted_motions.append(
+                    (
+                        np.asarray(candidate, dtype=np.float64)
+                        - np.asarray(parent, dtype=np.float64)
+                    )
+                    * spacing
+                )
             if not np.any(target):
                 break
             accepted_by_time[target_time] = target
+            previous_motion_mm = _median_motion(accepted_motions)
             source_time = target_time
             source_result = target
 

@@ -5,6 +5,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QSpinBox,
@@ -37,6 +38,22 @@ class RegionGrowPanel(QWidget):
         self.max_displacement.setSuffix(" mm")
         self.max_displacement_label = QLabel()
         form.addRow(self.max_displacement_label, self.max_displacement_control)
+        # 运动连续性使用物理位移，避免与原始强度容差混合单位。
+        self.motion_smoothness = QDoubleSpinBox()
+        self.motion_smoothness.setRange(0.0, 10.0)
+        self.motion_smoothness.setDecimals(2)
+        self.motion_smoothness.setSingleStep(0.1)
+        self.motion_smoothness.setValue(1.0)
+        self.motion_smoothness_label = QLabel()
+        form.addRow(self.motion_smoothness_label, self.motion_smoothness)
+        self.max_motion_change = QDoubleSpinBox()
+        self.max_motion_change.setRange(0.0, 100.0)
+        self.max_motion_change.setDecimals(2)
+        self.max_motion_change.setSingleStep(0.5)
+        self.max_motion_change.setValue(2.4)
+        self.max_motion_change.setSuffix(" mm")
+        self.max_motion_change_label = QLabel()
+        form.addRow(self.max_motion_change_label, self.max_motion_change)
         self.all_frames = QCheckBox()
         self.all_frames.setChecked(True)
         form.addRow(self.all_frames)
@@ -71,6 +88,12 @@ class RegionGrowPanel(QWidget):
         )
         self.max_displacement_label.setText(
             "最大帧间位移" if chinese else "Maximum inter-frame shift"
+        )
+        self.motion_smoothness_label.setText(
+            "运动平滑权重" if chinese else "Motion smoothness"
+        )
+        self.max_motion_change_label.setText(
+            "最大运动变化" if chinese else "Maximum motion change"
         )
         self.all_frames.setText("所有时间帧" if chinese else "All frames")
         self.frames_each_side_label.setText("单侧帧数" if chinese else "Frames each side")

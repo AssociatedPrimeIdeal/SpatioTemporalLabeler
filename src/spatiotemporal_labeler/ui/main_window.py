@@ -2211,6 +2211,8 @@ class MainWindow(QMainWindow):
         config = RegionGrowConfig(
             tolerance=float(self.grow_panel.tolerance.value()),
             max_displacement_mm=float(self.grow_panel.max_displacement.value()),
+            motion_smoothness=float(self.grow_panel.motion_smoothness.value()),
+            max_motion_change_mm=float(self.grow_panel.max_motion_change.value()),
             temporal_radius=(
                 None
                 if self.grow_panel.all_frames.isChecked()

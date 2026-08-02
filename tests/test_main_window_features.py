@@ -444,6 +444,40 @@ def test_temporal_propagation_uses_the_configured_maximum_displacement():
     finish_window(window, mask)
 
 
+def test_temporal_propagation_uses_the_configured_motion_smoothness():
+    # 面板参数应使传播在贴邻同强度候选中保持已建立的运动轨迹。
+    image_data = np.zeros((3, 1, 1, 3), dtype=np.float32)
+    image_data[0, 0, 0, 0] = 100.0
+    image_data[1, 0, 0, 1] = 100.0
+    image_data[1, 0, 0, 2] = 100.0
+    image_data[2, 0, 0, 2] = 100.0
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [0, 0, 0, 0]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.max_displacement.setValue(1.0)
+    window.grow_panel.motion_smoothness.setValue(0.0)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert mask.data[1, 0, 0, 2] == 1
+    assert mask.data[2, 0, 0, 2] == 0
+    window.undo()
+    window.grow_panel.motion_smoothness.setValue(1.0)
+    window.grow_panel.max_motion_change.setValue(0.1)
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert mask.data[1, 0, 0, 2] == 0
+    assert mask.data[2, 0, 0, 2] == 1
+    finish_window(window, mask)
+
+
 def test_temporal_propagation_undo_and_redo_restore_every_affected_frame():
     image_data = np.ones((1, 1, 1, 3), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
@@ -1022,6 +1056,9 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     assert window.grow_panel.tolerance.maximum() == 10.0
     assert window.grow_panel.tolerance.value() == 0.5
     assert window.grow_panel.max_displacement_control.slider.orientation() == Qt.Orientation.Vertical
+    assert window.grow_panel.motion_smoothness.value() == 1.0
+    assert window.grow_panel.max_motion_change.value() == 2.4
+    assert window.grow_panel.max_motion_change.suffix() == " mm"
     window.threshold_panel.lower_slider.setValue(5_000)
 
     after = int(window._threshold_selection().sum())

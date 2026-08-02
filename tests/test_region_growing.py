@@ -120,6 +120,39 @@ def test_interframe_tolerance_uses_raw_intensity_units_without_percentile_scalin
     assert accepted_set(result) == {(5, 5, 0, 0)}
 
 
+def test_motion_smoothness_rejects_a_tightly_adjacent_vessel_with_a_discontinuous_path():
+    # 相邻血管在第三帧有同强度候选；连续位移应保留原血管的运动方向。
+    image = np.zeros((3, 1, 1, 3), dtype=np.float32)
+    image[0, 0, 0, 0] = 100.0
+    image[1, 0, 0, 1] = 100.0
+    image[1, 0, 0, 2] = 100.0
+    image[2, 0, 0, 2] = 100.0
+    labels = np.zeros(image.shape, dtype=np.uint8)
+
+    unsmoothed = propagate(
+        image,
+        labels,
+        [(0, 0, 0, 0)],
+        tolerance=0.0,
+        max_displacement_mm=1.0,
+        motion_smoothness=0.0,
+    )
+    smoothed = propagate(
+        image,
+        labels,
+        [(0, 0, 0, 0)],
+        tolerance=0.0,
+        max_displacement_mm=1.0,
+        motion_smoothness=1.0,
+        max_motion_change_mm=0.1,
+    )
+
+    assert (1, 0, 0, 2) in accepted_set(unsmoothed)
+    assert (2, 0, 0, 2) not in accepted_set(unsmoothed)
+    assert (1, 0, 0, 2) not in accepted_set(smoothed)
+    assert (2, 0, 0, 2) in accepted_set(smoothed)
+
+
 def test_forward_and_backward_chains_stop_independently():
     image = np.zeros((1, 1, 1, 5), dtype=np.float32)
     image[..., 1:4] = 0.3
