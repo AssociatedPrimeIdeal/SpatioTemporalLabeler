@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.5 - 2026-08-03
+
+### Added
+
 - Small-component removal now offers current-frame 3D, each-frame 3D, and whole-sequence 4D scopes. The 4D mode preserves components connected through adjacent time points and measures their accumulated spatial volume.
 
 ### Changed
