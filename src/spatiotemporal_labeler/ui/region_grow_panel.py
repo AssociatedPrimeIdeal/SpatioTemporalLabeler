@@ -5,7 +5,6 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QSpinBox,
@@ -28,14 +27,16 @@ class RegionGrowPanel(QWidget):
         self.tolerance = self.tolerance_control.spin
         self.tolerance_label = QLabel()
         form.addRow(self.tolerance_label, self.tolerance_control)
-        self.max_displacement = QDoubleSpinBox()
-        self.max_displacement.setRange(0.0, 100.0)
-        self.max_displacement.setDecimals(2)
-        self.max_displacement.setSingleStep(0.5)
-        self.max_displacement.setValue(4.8)
+        # 最大物理位移与强度容差均提供滑条和精确数值输入。
+        self.max_displacement_control = FloatSliderSpin(
+            decimals=2, orientation=Qt.Orientation.Vertical
+        )
+        self.max_displacement_control.set_range(0.0, 100.0)
+        self.max_displacement = self.max_displacement_control.spin
+        self.max_displacement_control.set_value(4.8)
         self.max_displacement.setSuffix(" mm")
         self.max_displacement_label = QLabel()
-        form.addRow(self.max_displacement_label, self.max_displacement)
+        form.addRow(self.max_displacement_label, self.max_displacement_control)
         self.all_frames = QCheckBox()
         self.all_frames.setChecked(True)
         form.addRow(self.all_frames)
@@ -55,8 +56,10 @@ class RegionGrowPanel(QWidget):
         self.set_language("en")
 
     def set_image_range(self, low: float, high: float) -> None:
-        self.tolerance_control.set_range(0.0, 1.0)
-        self.tolerance_control.set_value(0.05)
+        # 容差直接使用原始图像强度单位，并以完整数据范围的 5% 作为默认值。
+        span = max(abs(float(high) - float(low)), 1e-9)
+        self.tolerance_control.set_range(0.0, span)
+        self.tolerance_control.set_value(span * 0.05)
 
     def set_frame_count(self, frame_count: int) -> None:
         self.frames_each_side.setMaximum(max(0, int(frame_count) - 1))
@@ -64,7 +67,7 @@ class RegionGrowPanel(QWidget):
     def set_language(self, language: str) -> None:
         chinese = language == "zh_CN"
         self.tolerance_label.setText(
-            "帧间强度容差" if chinese else "Inter-frame intensity tolerance"
+            "帧间原始强度容差" if chinese else "Inter-frame raw intensity tolerance"
         )
         self.max_displacement_label.setText(
             "最大帧间位移" if chinese else "Maximum inter-frame shift"

@@ -8,6 +8,9 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- Temporal propagation now compares raw image intensities without P1/P99 normalization; its tolerance control uses the active image's raw intensity range, and maximum inter-frame displacement has a high-resolution millimeter control.
+- Tag-triggered releases now create private GitHub Release drafts instead of publishing notifications.
+
 ### Fixed
 
 ## 0.3.2 - 2026-08-02

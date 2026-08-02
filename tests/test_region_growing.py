@@ -101,6 +101,25 @@ def test_large_interframe_intensity_change_stops_that_direction_without_skipping
     assert accepted_set(result) == {(0, 0, 0, 0), (0, 0, 0, 1)}
 
 
+def test_interframe_tolerance_uses_raw_intensity_units_without_percentile_scaling():
+    # 远端高信号建立大动态范围，确保结果不受 P1/P99 归一化影响。
+    image = np.zeros((10, 10, 1, 2), dtype=np.float32)
+    image[:2, :, :, :] = 1_000.0
+    image[5, 5, 0, 0] = 100.0
+    image[5, 5, 0, 1] = 101.0
+    labels = np.zeros(image.shape, dtype=np.uint8)
+
+    result = propagate(
+        image,
+        labels,
+        [(5, 5, 0, 0)],
+        tolerance=0.5,
+        max_displacement_mm=0.0,
+    )
+
+    assert accepted_set(result) == {(5, 5, 0, 0)}
+
+
 def test_forward_and_backward_chains_stop_independently():
     image = np.zeros((1, 1, 1, 5), dtype=np.float32)
     image[..., 1:4] = 0.3

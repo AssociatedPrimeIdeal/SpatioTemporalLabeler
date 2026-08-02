@@ -414,6 +414,36 @@ def test_temporal_propagation_uses_all_frames_by_default_and_can_replace_labels(
     finish_window(window, mask)
 
 
+def test_temporal_propagation_uses_the_configured_maximum_displacement():
+    # 位移参数为零时不能平移；增大到一个体素后才接受相邻位置的目标。
+    image_data = np.zeros((2, 1, 1, 2), dtype=np.float32)
+    image_data[0, 0, 0, 0] = 10.0
+    image_data[1, 0, 0, 1] = 10.0
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [0, 0, 0, 0]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.max_displacement.setValue(0.0)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert mask.data[0, 0, 0, 0] == 1
+    assert mask.data[1, 0, 0, 1] == 0
+    window.undo()
+    window.grow_panel.max_displacement.setValue(1.0)
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert mask.data[0, 0, 0, 0] == 1
+    assert mask.data[1, 0, 0, 1] == 1
+    finish_window(window, mask)
+
+
 def test_temporal_propagation_undo_and_redo_restore_every_affected_frame():
     image_data = np.ones((1, 1, 1, 3), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
@@ -988,6 +1018,10 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     assert window.threshold_panel.lower_slider.maximum() == 10_000
     assert window.threshold_panel.lower_slider.orientation() == Qt.Orientation.Vertical
     assert window.grow_panel.tolerance_control.slider.orientation() == Qt.Orientation.Vertical
+    assert window.grow_panel.tolerance.minimum() == 0.0
+    assert window.grow_panel.tolerance.maximum() == 10.0
+    assert window.grow_panel.tolerance.value() == 0.5
+    assert window.grow_panel.max_displacement_control.slider.orientation() == Qt.Orientation.Vertical
     window.threshold_panel.lower_slider.setValue(5_000)
 
     after = int(window._threshold_selection().sum())
@@ -1021,12 +1055,13 @@ def test_vertical_slider_tracks_expand_with_their_panels():
     app.processEvents()
 
     grow_slider = grow_panel.tolerance_control.slider
+    displacement_slider = grow_panel.max_displacement_control.slider
     threshold_lower = threshold_panel.lower_slider
     threshold_upper = threshold_panel.upper_slider
     assert grow_slider.height() > 128
+    assert displacement_slider.height() > 128
     assert threshold_lower.height() > 128
     assert threshold_upper.height() > 128
-    assert grow_panel.max_displacement.height() < grow_slider.height()
     assert threshold_panel.lower.height() < threshold_lower.height()
 
     grow_panel.close()

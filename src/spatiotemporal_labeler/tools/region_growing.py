@@ -47,8 +47,7 @@ class RegionGrowResult:
     ``accepted_voxels`` is in canonical ``[X, Y, Z, T]`` order.  It contains
     the stroke seeds and the voxel-wise matches in each reached neighboring
     frame, so assigning all returned coordinates to the active label is valid.
-    ``seed_median`` is reported in the shared robustly normalized sequence
-    intensity space.
+    ``seed_median`` is reported in the source image's raw intensity space.
     """
 
     accepted_voxels: NDArray[np.intp]
@@ -66,7 +65,7 @@ class RegionGrowResult:
 
 
 _SAFETY_ABORT_REASON = "maximum changed voxel safety limit exceeded"
-_NORMALIZATION_EPSILON = np.finfo(np.float32).eps
+_DISPLACEMENT_EPSILON = np.finfo(np.float32).eps
 
 
 def _empty_result(
@@ -101,25 +100,6 @@ def _as_seed_array(
     return np.asarray(seed_array, dtype=np.intp)
 
 
-def _normalized_sequence(image: NDArray[np.number]) -> NDArray[np.float32]:
-    """Normalize all frames together so temporal signal changes remain visible."""
-
-    values = np.asarray(image, dtype=np.float32)
-    finite = np.isfinite(values)
-    normalized = np.full(values.shape, np.nan, dtype=np.float32)
-    if not np.any(finite):
-        return normalized
-    finite_values = values[finite].astype(np.float64, copy=False)
-    lower, upper = np.percentile(finite_values, (1.0, 99.0))
-    normalized[finite] = np.clip(
-        (values[finite].astype(np.float64) - lower)
-        / (float(upper - lower) + _NORMALIZATION_EPSILON),
-        0.0,
-        1.0,
-    ).astype(np.float32, copy=False)
-    return normalized
-
-
 def _temporal_offsets(
     spacing: NDArray[np.float64], max_displacement_mm: float
 ) -> NDArray[np.intp]:
@@ -135,7 +115,7 @@ def _temporal_offsets(
                     + (dy * spacing[1]) ** 2
                     + (dz * spacing[2]) ** 2
                 )
-                if distance_squared <= max_displacement_mm**2 + _NORMALIZATION_EPSILON:
+                if distance_squared <= max_displacement_mm**2 + _DISPLACEMENT_EPSILON:
                     offsets.append((float(distance_squared), dx, dy, dz))
     offsets.sort()
     return np.asarray([offset[1:] for offset in offsets], dtype=np.intp)
@@ -156,8 +136,8 @@ def grow_region_4d(
 
     The starting frame accepts only valid stroke seeds.  For each neighboring
     frame, every source voxel independently selects its best finite candidate
-    inside the physical displacement window, provided its normalized intensity
-    changes by no more than ``config.tolerance``.  A target can be selected by
+    inside the physical displacement window, provided its raw intensity changes
+    by no more than ``config.tolerance``.  A target can be selected by
     multiple sources but is accepted once; this permits the patch to shrink or
     deform without ever increasing through same-frame flood filling.
     """
@@ -213,7 +193,8 @@ def grow_region_4d(
     stroke_time = int(t0) - time_start
     active_label_value = int(active_label)
 
-    normalized_image = _normalized_sequence(image_roi)
+    # 保留原始强度，避免 P1/P99 截断改变用户设置的容差含义。
+    raw_image = np.asarray(image_roi)
 
     def allowed_coordinate(coordinate: tuple[int, int, int], time_index: int) -> bool:
         coordinate_4d = coordinate + (time_index,)
@@ -224,7 +205,7 @@ def grow_region_4d(
             label == 0
             or label == active_label_value
             or config.replace_other_labels
-        ) and bool(np.isfinite(normalized_image[coordinate + (time_index,)]))
+        ) and bool(np.isfinite(raw_image[coordinate + (time_index,)]))
 
     valid_seed_mask = np.asarray(
         [
@@ -236,7 +217,7 @@ def grow_region_4d(
     valid_seeds = local_seeds[valid_seed_mask]
     if not valid_seeds.size:
         return _empty_result(roi_slices)
-    seed_values = normalized_image[
+    seed_values = raw_image[
         tuple(valid_seeds[:, axis] for axis in range(4))
     ]
     seed_median = float(np.median(seed_values.astype(np.float64, copy=False)))
@@ -274,7 +255,7 @@ def grow_region_4d(
     def best_match(
         parent: tuple[int, int, int], source_time: int, target_time: int
     ) -> tuple[int, int, int] | None:
-        source_value = float(normalized_image[parent + (source_time,)])
+        source_value = float(raw_image[parent + (source_time,)])
         best_key: tuple[float, int, int, int] | None = None
         best_coordinate: tuple[int, int, int] | None = None
         for offset in offsets:
@@ -285,7 +266,7 @@ def grow_region_4d(
             ) or not allowed_coordinate(coordinate, target_time):
                 continue
             difference = abs(
-                float(normalized_image[coordinate + (target_time,)] - source_value)
+                float(raw_image[coordinate + (target_time,)]) - source_value
             )
             if difference > config.tolerance:
                 continue
