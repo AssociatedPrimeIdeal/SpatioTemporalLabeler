@@ -29,7 +29,7 @@ SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medica
 - Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
 - Diverse per-label colors with double-click color editing, row-menu rename/opacity controls, and a global label opacity control
 - Live window level/width sliders in a separate display panel
-- Stroke-seeded local 3D grow repair followed by support-constrained frame-by-frame propagation, with label barriers and optional replacement
+- Stroke-seeded temporal propagation with per-voxel intensity matching, configurable physical frame-to-frame displacement, label barriers, and optional replacement
 - Per-label morphology with physical `mm` radii and `mm³` component volumes
 - Physical signed-distance interpolation between user-selected label keyframes
 - Automatic all-frame replication or selected-frame placement when mapping 3D labels to a 4D image
@@ -88,7 +88,7 @@ spatiotemporal-labeler
 
 | Input | Action |
 | --- | --- |
-| Left drag | Use the selected brush, eraser, scissors lasso, contour, or region grow repair tool |
+| Left drag | Use the selected brush, eraser, scissors lasso, contour, or temporal propagation tool |
 | Alt + left drag in 3D | Rotate the 3D camera |
 | Right drag | Temporarily erase without changing the selected tool |
 | Hold Shift and move | Move the linked spatial cursor without editing |
@@ -101,7 +101,7 @@ spatiotemporal-labeler
 | Wheel in a spatial view | Change its orthogonal slice |
 | Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
 | Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
-| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or region grow repair |
+| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or temporal propagation |
 | Hold `I` and move | Pick labels continuously without changing the selected tool |
 | Hold `H` | Temporarily hide all 2D label overlays |
 | `R` | Reset 2D zoom and pan, or auto-window and reset the hovered other-image preview |
@@ -111,7 +111,7 @@ spatiotemporal-labeler
 | `Ctrl+Z`, `Ctrl+Y` | Undo or redo |
 | `Esc` | Cancel a pending contour or active lasso preview |
 
-Enable **All time frames** to apply ordinary spatial gestures in every frame. Region grow repair has its own local temporal range and does not use this option. Temporal-view region-grow gestures are read-only.
+Enable **All time frames** to apply ordinary spatial gestures in every frame. Temporal propagation has its own default all-frame range and does not use this option. It begins from a spatial-view source patch, then independently matches each voxel only into adjacent frames; it does not grow within a frame and stops in a direction after an unmatched frame.
 
 ## Data Contract
 

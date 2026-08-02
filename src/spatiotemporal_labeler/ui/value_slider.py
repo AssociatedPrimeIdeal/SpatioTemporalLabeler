@@ -3,7 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QSlider, QWidget
+from PySide6.QtWidgets import (
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QSizePolicy,
+    QSlider,
+    QWidget,
+)
 
 
 class FloatSliderSpin(QWidget):
@@ -30,8 +36,13 @@ class FloatSliderSpin(QWidget):
         self.slider.setPageStep(1_000)
         if orientation == Qt.Orientation.Vertical:
             self.slider.setMinimumHeight(104)
-            self.slider.setMaximumHeight(128)
             self.slider.setMinimumWidth(24)
+            self.slider.setSizePolicy(
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
+            )
+            self.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+            )
         else:
             self.slider.setMinimumWidth(130)
         self.slider.valueChanged.connect(self._slider_changed)
@@ -42,7 +53,10 @@ class FloatSliderSpin(QWidget):
         self.spin.setKeyboardTracking(False)
         self.spin.setAccelerated(True)
         self.spin.valueChanged.connect(self._spin_changed)
-        layout.addWidget(self.spin)
+        if orientation == Qt.Orientation.Vertical:
+            layout.addWidget(self.spin, alignment=Qt.AlignmentFlag.AlignVCenter)
+        else:
+            layout.addWidget(self.spin)
         self.set_range(0.0, 1.0)
 
     def set_range(self, minimum: float, maximum: float) -> None:

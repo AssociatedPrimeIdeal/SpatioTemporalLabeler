@@ -278,7 +278,7 @@ def threshold_overlay(
 
 
 def region_grow_preview_overlay(selection: np.ndarray) -> np.ndarray:
-    """Render the uncommitted region-grow stroke without changing labels."""
+    """Render the uncommitted temporal-propagation source stroke."""
     selected = np.asarray(selection, dtype=bool)
     rgba = np.zeros((*selected.shape, 4), dtype=np.uint8)
     rgba[..., :3][selected] = (57, 213, 197)

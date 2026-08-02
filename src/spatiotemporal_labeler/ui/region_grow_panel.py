@@ -28,30 +28,35 @@ class RegionGrowPanel(QWidget):
         self.tolerance = self.tolerance_control.spin
         self.tolerance_label = QLabel()
         form.addRow(self.tolerance_label, self.tolerance_control)
-        self.spatial_range = QDoubleSpinBox()
-        self.spatial_range.setRange(0.0, 500.0)
-        self.spatial_range.setDecimals(2)
-        self.spatial_range.setSingleStep(1.0)
-        self.spatial_range.setValue(12.0)
-        self.spatial_range.setSuffix(" mm")
-        self.spatial_range_label = QLabel()
-        form.addRow(self.spatial_range_label, self.spatial_range)
+        self.max_displacement = QDoubleSpinBox()
+        self.max_displacement.setRange(0.0, 100.0)
+        self.max_displacement.setDecimals(2)
+        self.max_displacement.setSingleStep(0.5)
+        self.max_displacement.setValue(4.8)
+        self.max_displacement.setSuffix(" mm")
+        self.max_displacement_label = QLabel()
+        form.addRow(self.max_displacement_label, self.max_displacement)
+        self.all_frames = QCheckBox()
+        self.all_frames.setChecked(True)
+        form.addRow(self.all_frames)
         self.frames_each_side = QSpinBox()
         self.frames_each_side.setRange(0, 100)
         self.frames_each_side.setValue(1)
+        self.frames_each_side.setEnabled(False)
         self.frames_each_side_label = QLabel()
         form.addRow(self.frames_each_side_label, self.frames_each_side)
+        self.all_frames.toggled.connect(
+            lambda checked: self.frames_each_side.setEnabled(not checked)
+        )
         self.replace_other_labels = QCheckBox()
         self.replace_other_labels.setChecked(False)
         form.addRow(self.replace_other_labels)
-        layout.addLayout(form)
-        layout.addStretch()
+        layout.addLayout(form, 1)
         self.set_language("en")
 
     def set_image_range(self, low: float, high: float) -> None:
-        span = max(abs(high - low), 1e-6)
-        self.tolerance_control.set_range(0.0, span)
-        self.tolerance_control.set_value(span * 0.05)
+        self.tolerance_control.set_range(0.0, 1.0)
+        self.tolerance_control.set_value(0.05)
 
     def set_frame_count(self, frame_count: int) -> None:
         self.frames_each_side.setMaximum(max(0, int(frame_count) - 1))
@@ -59,9 +64,12 @@ class RegionGrowPanel(QWidget):
     def set_language(self, language: str) -> None:
         chinese = language == "zh_CN"
         self.tolerance_label.setText(
-            "强度容差" if chinese else "Intensity tolerance"
+            "帧间强度容差" if chinese else "Inter-frame intensity tolerance"
         )
-        self.spatial_range_label.setText("空间范围" if chinese else "Spatial range")
+        self.max_displacement_label.setText(
+            "最大帧间位移" if chinese else "Maximum inter-frame shift"
+        )
+        self.all_frames.setText("所有时间帧" if chinese else "All frames")
         self.frames_each_side_label.setText("单侧帧数" if chinese else "Frames each side")
         self.replace_other_labels.setText(
             "替换其他标签" if chinese else "Replace other labels"

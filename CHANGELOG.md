@@ -6,14 +6,18 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
-- Added stroke-seeded local 3D+t region grow repair with a live uncommitted brush preview, bounded physical and temporal ranges, label barriers, optional label replacement, and atomic undo/redo.
+- Added stroke-seeded temporal label propagation with a live uncommitted brush preview, label barriers, optional replacement, and atomic undo/redo.
 ### Changed
 
 - Removed the temporal image-matching brush workflow.
 - Percentage threshold bounds and region-grow tolerance now use vertical high-resolution sliders with fine numeric adjustment.
-- Region grow now completes the stroke frame in 3D before propagating independently one frame at a time with local temporal support, preventing jumps to unrelated structures.
+- Vertical threshold and region-grow slider tracks now expand to use the available dock-panel height while keeping their numeric inputs compact.
+- Temporal propagation now matches each source voxel only into the immediately adjacent frame, with a configurable physical displacement window and intensity-change limit; it has no within-frame growth and stops after an unmatched frame.
+- Temporal propagation now attempts every frame by default; a bounded per-side frame range remains available when needed.
 - Region-grow brush previews and submitted stroke seeds now respect the threshold selection captured when the stroke starts, unless bypass is held.
 ### Fixed
+
+- Corrected the tiny-range threshold regression test to use the slider's hundredths-of-a-percent scale.
 
 ## 0.3.1 - 2026-08-01
 

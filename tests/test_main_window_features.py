@@ -11,6 +11,8 @@ from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui import MainWindow
 from spatiotemporal_labeler.ui.label_panel import THRESHOLD_MASK_ITEM
+from spatiotemporal_labeler.ui.region_grow_panel import RegionGrowPanel
+from spatiotemporal_labeler.ui.threshold_panel import ThresholdPanel
 from spatiotemporal_labeler.ui.viewer_3d import Mask3DViewer
 from spatiotemporal_labeler.ui import viewer_3d as viewer_3d_module
 
@@ -301,16 +303,15 @@ def test_applied_threshold_is_retained_but_inactive_on_an_incompatible_image():
     finish_window(window, mask)
 
 
-def test_region_grow_stroke_keeps_labels_unchanged_until_release_and_honors_barriers():
+def test_temporal_propagation_stroke_keeps_labels_unchanged_until_release_and_honors_barriers():
     image_data = np.ones((7, 7, 1, 2), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
-    mask_data[3, :, 0, 0] = 2
+    mask_data[1, 1, 0, 1] = 2
     window, _image, mask = make_window(image_data, mask_data)
     window.cursor = [1, 2, 0, 0]
     window.brush_diameter.setValue(1.0)
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(20.0)
-    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.max_displacement.setValue(0.0)
     window._set_tool("grow")
     original = mask.data.copy()
 
@@ -325,31 +326,33 @@ def test_region_grow_stroke_keeps_labels_unchanged_until_release_and_honors_barr
     window._stroke_finished("X-Y", 2, 5)
 
     assert window.slice_views["X-Y"].region_grow_preview_item.image is None
-    assert np.all(mask.data[:3, :, 0, 0] == 1)
-    assert np.all(mask.data[3, :, 0, 0] == 2)
-    assert np.all(mask.data[4:, :, 0, 0] == 0)
-    assert not np.any(mask.data[..., 1])
+    stroke_coordinates = ((1, 1), (1, 2), (2, 3), (2, 4), (2, 5))
+    assert all(mask.data[x, y, 0, 0] == 1 for x, y in stroke_coordinates)
+    assert all(mask.data[x, y, 0, 1] == 1 for x, y in stroke_coordinates[1:])
+    assert mask.data[1, 1, 0, 1] == 2
+    assert not np.any(mask.data[:1])
+    assert not np.any(mask.data[3:])
     assert len(window._undo_stack) == 1
     window.undo()
     assert np.array_equal(mask.data, original)
     window.redo()
-    assert np.all(mask.data[:3, :, 0, 0] == 1)
+    assert all(mask.data[x, y, 0, 0] == 1 for x, y in stroke_coordinates)
     finish_window(window, mask)
 
 
-def test_region_grow_panel_and_spatial_stroke_footprints_cover_all_spatial_views():
+def test_temporal_propagation_panel_and_spatial_stroke_footprints_cover_all_spatial_views():
     image_data = np.full((5, 5, 5, 1), np.nan, dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
     window, _image, mask = make_window(image_data, mask_data)
 
     assert not hasattr(window.grow_panel, "scope")
-    assert window.grow_panel.spatial_range.suffix() == " mm"
-    assert window.grow_panel.frames_each_side.value() == 0
+    assert window.grow_panel.max_displacement.suffix() == " mm"
+    assert window.grow_panel.all_frames.isChecked()
+    assert not window.grow_panel.frames_each_side.isEnabled()
     assert not window.grow_panel.replace_other_labels.isChecked()
 
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(0.0)
-    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.max_displacement.setValue(0.0)
     window.brush_diameter.setValue(3.0)
     window._set_tool("grow")
     window.cursor = [2, 2, 2, 0]
@@ -379,16 +382,15 @@ def test_region_grow_panel_and_spatial_stroke_footprints_cover_all_spatial_views
     finish_window(window, mask)
 
 
-def test_region_grow_uses_its_temporal_range_not_all_frames_and_can_replace_labels():
-    image_data = np.ones((6, 1, 1, 3), dtype=np.float32)
+def test_temporal_propagation_uses_all_frames_by_default_and_can_replace_labels():
+    image_data = np.ones((2, 1, 1, 3), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
-    mask_data[3, 0, 0, 1] = 2
+    mask_data[1, 0, 0, 2] = 2
     window, _image, mask = make_window(image_data, mask_data)
     window.cursor = [1, 0, 0, 1]
     window.brush_diameter.setValue(1.0)
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(20.0)
-    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.max_displacement.setValue(0.0)
     window.grow_panel.replace_other_labels.setChecked(False)
     window.all_frames_toggle.setChecked(True)
     window._set_tool("grow")
@@ -396,42 +398,40 @@ def test_region_grow_uses_its_temporal_range_not_all_frames_and_can_replace_labe
     window._stroke_started("X-Y", 1, 0)
     window._stroke_finished("X-Y", 1, 0)
 
-    assert np.all(mask.data[:3, 0, 0, 1] == 1)
-    assert mask.data[3, 0, 0, 1] == 2
-    assert not np.any(mask.data[..., 0])
-    assert not np.any(mask.data[..., 2])
+    assert np.all(mask.data[1, 0, 0, :2] == 1)
+    assert mask.data[1, 0, 0, 2] == 2
+    assert not np.any(mask.data[0])
 
     window.undo()
     window.grow_panel.replace_other_labels.setChecked(True)
     window._stroke_started("X-Y", 1, 0)
     window._stroke_finished("X-Y", 1, 0)
 
-    assert np.all(mask.data[:, 0, 0, 1] == 1)
+    assert np.all(mask.data[1, 0, 0, :] == 1)
     assert window.statusBar().currentMessage() == window._tr(
-        "grow_applied", added=5, replaced=1, sources="2: 1"
+        "grow_applied", added=2, replaced=1, sources="2: 1"
     )
     finish_window(window, mask)
 
 
-def test_region_grow_temporal_window_undo_and_redo_restore_every_affected_frame():
-    image_data = np.ones((4, 1, 1, 3), dtype=np.float32)
+def test_temporal_propagation_undo_and_redo_restore_every_affected_frame():
+    image_data = np.ones((1, 1, 1, 3), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
     window, _image, mask = make_window(image_data, mask_data)
-    window.cursor = [1, 0, 0, 1]
+    window.cursor = [0, 0, 0, 1]
     window.brush_diameter.setValue(1.0)
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(20.0)
-    window.grow_panel.frames_each_side.setValue(1)
+    window.grow_panel.max_displacement.setValue(0.0)
     window._set_tool("grow")
     original = mask.data.copy()
 
-    window._stroke_started("X-Y", 1, 0)
-    window._stroke_finished("X-Y", 1, 0)
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
     grown = mask.data.copy()
 
     assert np.all(grown == 1)
     assert len(window._undo_stack) == 1
-    assert window._undo_stack[-1].flat_indices.size == image_data.size
+    assert window._undo_stack[-1].flat_indices.size == 3
     window.undo()
     assert np.array_equal(mask.data, original)
     window.redo()
@@ -439,7 +439,7 @@ def test_region_grow_temporal_window_undo_and_redo_restore_every_affected_frame(
     finish_window(window, mask)
 
 
-def test_region_grow_threshold_bypass_is_captured_at_stroke_start_and_temporal_views_are_read_only():
+def test_temporal_propagation_threshold_bypass_is_captured_at_stroke_start_and_temporal_views_are_read_only():
     image_data = np.ones((5, 1, 1, 1), dtype=np.float32)
     window, image, mask = make_window(
         image_data, np.zeros(image_data.shape, dtype=np.uint8)
@@ -451,22 +451,21 @@ def test_region_grow_threshold_bypass_is_captured_at_stroke_start_and_temporal_v
     window.cursor = [0, 0, 0, 0]
     window.brush_diameter.setValue(1.0)
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(20.0)
-    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.max_displacement.setValue(0.0)
     window._set_tool("grow")
 
     window._stroke_started("X-Y", 0, 0)
     window._stroke_finished("X-Y", 0, 0)
 
-    assert np.all(mask.data[:2, 0, 0, 0] == 1)
-    assert not np.any(mask.data[2:, 0, 0, 0])
+    assert mask.data[0, 0, 0, 0] == 1
+    assert not np.any(mask.data[1:, 0, 0, 0])
     window.undo()
     window._threshold_bypass_held = True
     window._stroke_started("X-Y", 0, 0)
     window._threshold_bypass_held = False
     window._stroke_finished("X-Y", 0, 0)
 
-    assert np.all(mask.data[:, 0, 0, 0] == 1)
+    assert mask.data[0, 0, 0, 0] == 1
     before_temporal = mask.data.copy()
     window._stroke_started("X-T", 0, 0)
     window._stroke_finished("X-T", 0, 0)
@@ -486,8 +485,7 @@ def test_region_grow_preview_and_seeds_are_filtered_by_threshold_before_release(
     window.cursor = [2, 2, 0, 0]
     window.brush_diameter.setValue(3.0)
     window.grow_panel.tolerance.setValue(0.0)
-    window.grow_panel.spatial_range.setValue(0.0)
-    window.grow_panel.frames_each_side.setValue(0)
+    window.grow_panel.max_displacement.setValue(0.0)
     window._set_tool("grow")
 
     window._stroke_started("X-Y", 2, 2)
@@ -1012,6 +1010,31 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     finish_window(window, mask)
 
 
+def test_vertical_slider_tracks_expand_with_their_panels():
+    app = ensure_application()
+    grow_panel = RegionGrowPanel()
+    threshold_panel = ThresholdPanel()
+    grow_panel.resize(320, 760)
+    threshold_panel.resize(320, 760)
+    grow_panel.show()
+    threshold_panel.show()
+    app.processEvents()
+
+    grow_slider = grow_panel.tolerance_control.slider
+    threshold_lower = threshold_panel.lower_slider
+    threshold_upper = threshold_panel.upper_slider
+    assert grow_slider.height() > 128
+    assert threshold_lower.height() > 128
+    assert threshold_upper.height() > 128
+    assert grow_panel.max_displacement.height() < grow_slider.height()
+    assert threshold_panel.lower.height() < threshold_lower.height()
+
+    grow_panel.close()
+    threshold_panel.close()
+    grow_panel.deleteLater()
+    threshold_panel.deleteLater()
+
+
 def test_selecting_threshold_method_calculates_without_a_button():
     image_data = np.zeros((8, 8, 2, 1), dtype=np.float32)
     image_data[4:, :, :, :] = 10.0
@@ -1040,7 +1063,7 @@ def test_threshold_percentages_preserve_tiny_intensity_ranges():
     )
     panel = window.threshold_panel
 
-    panel.lower_slider.setValue(375)
+    panel.lower_slider.setValue(3_750)
     lower, upper = panel.intensity_bounds
 
     expected = image_data.min() + 0.375 * (image_data.max() - image_data.min())

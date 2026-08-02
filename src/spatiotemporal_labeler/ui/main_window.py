@@ -2210,8 +2210,12 @@ class MainWindow(QMainWindow):
         selection = self._grow_stroke_threshold_selection
         config = RegionGrowConfig(
             tolerance=float(self.grow_panel.tolerance.value()),
-            spatial_margin_mm=float(self.grow_panel.spatial_range.value()),
-            temporal_radius=int(self.grow_panel.frames_each_side.value()),
+            max_displacement_mm=float(self.grow_panel.max_displacement.value()),
+            temporal_radius=(
+                None
+                if self.grow_panel.all_frames.isChecked()
+                else int(self.grow_panel.frames_each_side.value())
+            ),
             replace_other_labels=self.grow_panel.replace_other_labels.isChecked(),
         )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)

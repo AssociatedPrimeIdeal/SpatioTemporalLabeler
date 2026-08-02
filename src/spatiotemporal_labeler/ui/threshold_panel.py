@@ -86,11 +86,10 @@ class ThresholdPanel(QWidget):
         self.radius.valueChanged.connect(self.changed)
         self.radius_label = QLabel()
         form.addRow(self.radius_label, self.radius)
-        layout.addLayout(form)
+        layout.addLayout(form, 1)
         self.apply_button = QPushButton()
         self.apply_button.clicked.connect(self.applyRequested)
         layout.addWidget(self.apply_button)
-        layout.addStretch()
         self.set_language("en")
 
     def set_image_range(self, low: float, high: float) -> None:
