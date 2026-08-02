@@ -8,6 +8,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+### Fixed
+
+## 0.3.4 - 2026-08-03
+
+### Added
+
+### Changed
+
 - Temporal propagation now favors smooth physical motion between frames and rejects abrupt motion changes, reducing jumps to tightly adjacent vessels.
 
 ### Fixed
