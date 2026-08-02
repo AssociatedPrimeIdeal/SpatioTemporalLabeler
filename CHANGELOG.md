@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.2 - 2026-08-02
+
+### Added
+
 - Added stroke-seeded temporal label propagation with a live uncommitted brush preview, label barriers, optional replacement, and atomic undo/redo.
 ### Changed
 
