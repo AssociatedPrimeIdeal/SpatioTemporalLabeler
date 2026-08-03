@@ -82,6 +82,40 @@ def test_zero_displacement_requires_the_same_spatial_coordinate():
     assert accepted_set(result) == {(1, 0, 0, 0)}
 
 
+def test_inward_only_propagation_does_not_leave_the_source_stroke_footprint():
+    # 起笔帧覆盖最大血管；下一帧仅有贴近血管的同强度候选。
+    image = np.zeros((4, 1, 1, 2), dtype=np.float32)
+    image[1, 0, 0, 0] = 0.6
+    image[2, 0, 0, 0] = 0.8
+    image[2, 0, 0, 1] = 0.6
+    image[3, 0, 0, 1] = 0.8
+    labels = np.zeros(image.shape, dtype=np.uint8)
+
+    unrestricted = propagate(
+        image,
+        labels,
+        [(1, 0, 0, 0), (2, 0, 0, 0)],
+        tolerance=0.0,
+        max_displacement_mm=1.0,
+        inward_only=False,
+    )
+    inward_only = propagate(
+        image,
+        labels,
+        [(1, 0, 0, 0), (2, 0, 0, 0)],
+        tolerance=0.0,
+        max_displacement_mm=1.0,
+        inward_only=True,
+    )
+
+    assert (3, 0, 0, 1) in accepted_set(unrestricted)
+    assert not {
+        coordinate[:3]
+        for coordinate in accepted_set(inward_only)
+        if coordinate[3] == 1
+    }.difference({(1, 0, 0), (2, 0, 0)})
+
+
 def test_large_interframe_intensity_change_stops_that_direction_without_skipping():
     image = np.zeros((1, 1, 1, 4), dtype=np.float32)
     image[..., 0] = 0.2

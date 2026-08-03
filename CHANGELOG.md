@@ -6,7 +6,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Temporal propagation now offers an inward-only mode that keeps later-frame matches within the source-stroke footprint, preventing a largest-frame vessel outline from drifting into adjacent vessels.
+
 ### Changed
+
+- Inward-only temporal propagation is now enabled by default for new propagation strokes.
 
 ### Fixed
 

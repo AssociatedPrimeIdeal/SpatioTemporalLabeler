@@ -69,6 +69,9 @@ class RegionGrowPanel(QWidget):
         self.replace_other_labels = QCheckBox()
         self.replace_other_labels.setChecked(False)
         form.addRow(self.replace_other_labels)
+        self.inward_only = QCheckBox()
+        self.inward_only.setChecked(True)
+        form.addRow(self.inward_only)
         layout.addLayout(form, 1)
         self.set_language("en")
 
@@ -99,4 +102,12 @@ class RegionGrowPanel(QWidget):
         self.frames_each_side_label.setText("单侧帧数" if chinese else "Frames each side")
         self.replace_other_labels.setText(
             "替换其他标签" if chinese else "Replace other labels"
+        )
+        self.inward_only.setText(
+            "仅向内传播" if chinese else "Inward-only propagation"
+        )
+        self.inward_only.setToolTip(
+            "后续帧仅保留在起笔足迹内的体素；适用于在血管最大帧完整描绘后传播"
+            if chinese
+            else "Keep propagated voxels inside the source-stroke footprint; use after covering the vessel at its largest frame"
         )

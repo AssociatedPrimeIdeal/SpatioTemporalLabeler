@@ -501,6 +501,7 @@ def test_temporal_propagation_panel_and_spatial_stroke_footprints_cover_all_spat
     assert window.grow_panel.all_frames.isChecked()
     assert not window.grow_panel.frames_each_side.isEnabled()
     assert not window.grow_panel.replace_other_labels.isChecked()
+    assert window.grow_panel.inward_only.isChecked()
 
     window.grow_panel.tolerance.setValue(0.0)
     window.grow_panel.max_displacement.setValue(0.0)
@@ -586,12 +587,36 @@ def test_temporal_propagation_uses_the_configured_maximum_displacement():
     assert mask.data[1, 0, 0, 1] == 0
     window.undo()
     window.grow_panel.max_displacement.setValue(1.0)
+    # 此用例专门验证跨起笔足迹的位移，显式关闭新的默认保护。
+    window.grow_panel.inward_only.setChecked(False)
 
     window._stroke_started("X-Y", 0, 0)
     window._stroke_finished("X-Y", 0, 0)
 
     assert mask.data[0, 0, 0, 0] == 1
     assert mask.data[1, 0, 0, 1] == 1
+    finish_window(window, mask)
+
+
+def test_temporal_propagation_inward_only_keeps_matches_inside_the_stroke_footprint():
+    image_data = np.zeros((2, 1, 1, 2), dtype=np.float32)
+    image_data[0, 0, 0, 0] = 10.0
+    image_data[1, 0, 0, 1] = 10.0
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.cursor = [0, 0, 0, 0]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.max_displacement.setValue(1.0)
+    window.grow_panel.inward_only.setChecked(True)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert mask.data[0, 0, 0, 0] == 1
+    assert mask.data[1, 0, 0, 1] == 0
     finish_window(window, mask)
 
 
@@ -610,6 +635,8 @@ def test_temporal_propagation_uses_the_configured_motion_smoothness():
     window.grow_panel.tolerance.setValue(0.0)
     window.grow_panel.max_displacement.setValue(1.0)
     window.grow_panel.motion_smoothness.setValue(0.0)
+    # 此用例验证跨足迹运动的连续性，显式关闭新的默认保护。
+    window.grow_panel.inward_only.setChecked(False)
     window._set_tool("grow")
 
     window._stroke_started("X-Y", 0, 0)

@@ -2357,6 +2357,7 @@ class MainWindow(QMainWindow):
                 else int(self.grow_panel.frames_each_side.value())
             ),
             replace_other_labels=self.grow_panel.replace_other_labels.isChecked(),
+            inward_only=self.grow_panel.inward_only.isChecked(),
         )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:

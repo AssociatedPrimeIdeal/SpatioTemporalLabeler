@@ -26,6 +26,7 @@ class RegionGrowConfig:
     max_motion_change_mm: float = 2.4
     temporal_radius: int | None = None
     replace_other_labels: bool = False
+    inward_only: bool = False
     max_changed_voxels: int = 500_000
 
     def __post_init__(self) -> None:
@@ -271,6 +272,8 @@ def grow_region_4d(
         source[coordinate] = True
 
     accepted_by_time: dict[int, NDArray[np.bool_]] = {stroke_time: source}
+    # 向内模式以起笔帧的完整足迹为包络，阻止匹配越界追到相邻结构。
+    inward_envelope = source if config.inward_only else None
 
     def best_match(
         parent: tuple[int, int, int],
@@ -286,7 +289,11 @@ def grow_region_4d(
             if any(
                 coordinate[axis] < 0 or coordinate[axis] >= spatial_shape[axis]
                 for axis in range(3)
-            ) or not allowed_coordinate(coordinate, target_time):
+            ):
+                continue
+            if inward_envelope is not None and not bool(inward_envelope[coordinate]):
+                continue
+            if not allowed_coordinate(coordinate, target_time):
                 continue
             difference = abs(
                 float(raw_image[coordinate + (target_time,)]) - source_value
