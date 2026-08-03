@@ -158,6 +158,157 @@ def test_threshold_constrains_brush_and_bypass_ignores_it():
     finish_window(window, mask)
 
 
+def test_drawing_mode_toggles_select_the_requested_frame_and_threshold_scope():
+    image_data = np.ones((5, 1, 1, 3), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[3, 0, 0, :] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.cursor = [0, 0, 0, 1]
+    window.brush_diameter.setValue(1.0)
+
+    window.all_frames_toggle.setChecked(True)
+    window._stroke_started("X-Y", 3, 0)
+    window._stroke_finished("X-Y", 3, 0)
+
+    assert np.all(mask.data[3, 0, 0, :] == 1)
+    assert not window.threshold_bypass_toggle.isChecked()
+    assert not window.all_frames_bypass_toggle.isChecked()
+
+    window.threshold_bypass_toggle.setChecked(True)
+    window._stroke_started("X-Y", 1, 0)
+    window._stroke_finished("X-Y", 1, 0)
+
+    assert not window.all_frames_toggle.isChecked()
+    assert not window.all_frames_bypass_toggle.isChecked()
+    assert mask.data[1, 0, 0, 1] == 1
+    assert not np.any(mask.data[1, 0, 0, (0, 2)])
+
+    window.all_frames_bypass_toggle.setChecked(True)
+    window._stroke_started("X-Y", 2, 0)
+    window._stroke_finished("X-Y", 2, 0)
+
+    assert not window.all_frames_toggle.isChecked()
+    assert not window.threshold_bypass_toggle.isChecked()
+    assert np.all(mask.data[2, 0, 0, :] == 1)
+    finish_window(window, mask)
+
+
+def test_drawing_mode_shortcuts_toggle_or_apply_only_to_a_held_stroke():
+    image_data = np.ones((5, 1, 1, 3), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.shortcuts.update(
+        {
+            "all_frames_hold": "CapsLock",
+            "threshold_bypass": "Q",
+            "all_frames_bypass": "W",
+        }
+    )
+    window.isActiveWindow = lambda: True
+    window.cursor = [0, 0, 0, 1]
+    window.brush_diameter.setValue(1.0)
+
+    q_press = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Q, Qt.KeyboardModifier.NoModifier
+    )
+    q_release = QKeyEvent(
+        QEvent.Type.KeyRelease, Qt.Key.Key_Q, Qt.KeyboardModifier.NoModifier
+    )
+    assert window.eventFilter(window, q_press)
+    assert window._threshold_bypass_held
+    assert window.eventFilter(window, q_release)
+    assert window.threshold_bypass_toggle.isChecked()
+
+    w_press = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_W, Qt.KeyboardModifier.NoModifier
+    )
+    w_release = QKeyEvent(
+        QEvent.Type.KeyRelease, Qt.Key.Key_W, Qt.KeyboardModifier.NoModifier
+    )
+    assert window.eventFilter(window, w_press)
+    assert window.eventFilter(window, w_release)
+    assert window.all_frames_bypass_toggle.isChecked()
+    assert not window.threshold_bypass_toggle.isChecked()
+
+    window._clear_edit_modes()
+    caps_press = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_CapsLock, Qt.KeyboardModifier.NoModifier
+    )
+    caps_release = QKeyEvent(
+        QEvent.Type.KeyRelease, Qt.Key.Key_CapsLock, Qt.KeyboardModifier.NoModifier
+    )
+    assert window.eventFilter(window, caps_press)
+    window._stroke_started("X-Y", 4, 0)
+    window._stroke_finished("X-Y", 4, 0)
+    assert window.eventFilter(window, caps_release)
+
+    assert not window.all_frames_toggle.isChecked()
+    assert np.all(mask.data[4, 0, 0, :] == 1)
+    finish_window(window, mask)
+
+
+def test_lasso_respects_the_selected_threshold_bypass_mode():
+    image_data = np.ones((5, 5, 1, 1), dtype=np.float32)
+    mask_data = np.ones(image_data.shape, dtype=np.uint8)
+    window, image, mask = make_window(image_data, mask_data)
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[2, 2, 0, 0] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window._set_tool("lasso")
+
+    window._stroke_started("X-Y", 1, 1)
+    window._stroke_moved("X-Y", 3, 1)
+    window._stroke_moved("X-Y", 3, 3)
+    window._stroke_finished("X-Y", 1, 3)
+
+    assert mask.data[2, 2, 0, 0] == 0
+    assert mask.data[1, 1, 0, 0] == 1
+    window.undo()
+
+    window.threshold_bypass_toggle.setChecked(True)
+    window._stroke_started("X-Y", 1, 1)
+    window._stroke_moved("X-Y", 3, 1)
+    window._stroke_moved("X-Y", 3, 3)
+    window._stroke_finished("X-Y", 1, 3)
+
+    assert mask.data[1, 1, 0, 0] == 0
+    finish_window(window, mask)
+
+
+def test_3d_lasso_respects_the_selected_threshold_bypass_mode():
+    image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
+    mask_data = np.ones(image_data.shape, dtype=np.uint8)
+    window, image, mask = make_window(image_data, mask_data)
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[1, 1, 0, 0] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.viewer_3d.lasso_voxel_mask = lambda *args, **kwargs: np.ones(
+        mask.data.shape[:3], dtype=bool
+    )
+    window._set_tool("lasso")
+
+    window._lasso_3d_started()
+    window._lasso_3d_finished([])
+
+    assert mask.data[1, 1, 0, 0] == 0
+    assert mask.data[0, 0, 0, 0] == 1
+    window.undo()
+
+    window.threshold_bypass_toggle.setChecked(True)
+    window._lasso_3d_started()
+    window._lasso_3d_finished([])
+
+    assert not np.any(mask.data)
+    finish_window(window, mask)
+
+
 def test_eraser_only_clears_the_active_label_across_all_time_frames():
     image_data = np.ones((7, 7, 1, 2), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
@@ -534,6 +685,31 @@ def test_temporal_propagation_threshold_bypass_is_captured_at_stroke_start_and_t
     window._stroke_started("X-T", 0, 0)
     window._stroke_finished("X-T", 0, 0)
     assert np.array_equal(mask.data, before_temporal)
+    finish_window(window, mask)
+
+
+def test_threshold_bypass_mode_keeps_temporal_propagation_range_in_the_grow_panel():
+    image_data = np.ones((1, 1, 1, 5), dtype=np.float32)
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    threshold = np.zeros(image_data.shape, dtype=bool)
+    threshold[..., 2] = True
+    window._applied_threshold_mask = threshold
+    window._applied_threshold_image = image
+    window.cursor = [0, 0, 0, 2]
+    window.brush_diameter.setValue(1.0)
+    window.grow_panel.tolerance.setValue(0.0)
+    window.grow_panel.max_displacement.setValue(0.0)
+    window.grow_panel.all_frames.setChecked(False)
+    window.grow_panel.frames_each_side.setValue(1)
+    window.threshold_bypass_toggle.setChecked(True)
+    window._set_tool("grow")
+
+    window._stroke_started("X-Y", 0, 0)
+    window._stroke_finished("X-Y", 0, 0)
+
+    assert np.array_equal(mask.data[0, 0, 0, :], [0, 1, 1, 1, 0])
     finish_window(window, mask)
 
 

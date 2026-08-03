@@ -154,6 +154,9 @@ class MainWindow(QMainWindow):
         self._all_frames_held = False
         self._picker_held = False
         self._threshold_bypass_held = False
+        self._all_frames_bypass_held = False
+        self._edit_mode_shortcuts_used_for_stroke: set[str] = set()
+        self._updating_edit_modes = False
         self._labels_hidden_held = False
         self._hover_status_context: tuple[str, int, int] | None = None
         self._stroke_ignore_threshold = False
@@ -187,6 +190,7 @@ class MainWindow(QMainWindow):
         self._lasso_3d_frames: tuple[int, ...] = ()
         self._lasso_3d_before: np.ndarray | None = None
         self._lasso_3d_focus_frame = 0
+        self._lasso_3d_ignore_threshold = False
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
         self._build_ui()
@@ -364,8 +368,20 @@ class MainWindow(QMainWindow):
         self.slider_value_label.setMinimumWidth(100)
         navigation.addWidget(self.slider_value_label)
         self.all_frames_toggle = QCheckBox()
-        self.all_frames_toggle.toggled.connect(self._all_frames_toggled)
         navigation.addWidget(self.all_frames_toggle)
+        self.threshold_bypass_toggle = QCheckBox()
+        navigation.addWidget(self.threshold_bypass_toggle)
+        self.all_frames_bypass_toggle = QCheckBox()
+        navigation.addWidget(self.all_frames_bypass_toggle)
+        self._edit_mode_toggles = {
+            "all_frames": self.all_frames_toggle,
+            "threshold_bypass": self.threshold_bypass_toggle,
+            "all_frames_bypass": self.all_frames_bypass_toggle,
+        }
+        for mode, toggle in self._edit_mode_toggles.items():
+            toggle.toggled.connect(
+                lambda enabled, mode_key=mode: self._edit_mode_toggled(mode_key, enabled)
+            )
         root_layout.addLayout(navigation)
 
         for view in self.slice_views.values():
@@ -728,6 +744,10 @@ class MainWindow(QMainWindow):
         self.brush_shape.setItemText(1, self._tr("square_shape"))
         self.all_frames_toggle.setText(self._tr("all_frames"))
         self.all_frames_toggle.setToolTip(self._tr("all_frames_tip"))
+        self.threshold_bypass_toggle.setText(self._tr("threshold_bypass"))
+        self.threshold_bypass_toggle.setToolTip(self._tr("threshold_bypass_tip"))
+        self.all_frames_bypass_toggle.setText(self._tr("all_frames_bypass"))
+        self.all_frames_bypass_toggle.setToolTip(self._tr("all_frames_bypass_tip"))
         self.threshold_mask_action.setText(self._tr("threshold_mask"))
         self.settings_action.setText(self._tr("settings"))
         self.image_previews_action.setText(self._tr("image_previews"))
@@ -800,8 +820,7 @@ class MainWindow(QMainWindow):
             QEvent.Type.ApplicationDeactivate,
             QEvent.Type.WindowDeactivate,
         }:
-            self._all_frames_held = False
-            self._threshold_bypass_held = False
+            self._clear_edit_mode_holds()
             self._set_labels_hidden_held(False)
             self._set_picker_held(False)
             return super().eventFilter(watched, event)
@@ -814,9 +833,21 @@ class MainWindow(QMainWindow):
             return super().eventFilter(watched, event)
         editing_text = isinstance(watched, (QLineEdit, QAbstractSpinBox, QComboBox))
         pressed = event.type() == QEvent.Type.KeyPress
-        if self._event_matches(key_event, "all_frames_hold"):
-            self._all_frames_held = pressed
-            return True
+        for shortcut_key in (
+            "all_frames_hold",
+            "threshold_bypass",
+            "all_frames_bypass",
+        ):
+            if (
+                self.active_mask is not None
+                and self._event_matches(key_event, shortcut_key)
+                and (
+                    (pressed and not editing_text)
+                    or self._edit_mode_shortcut_is_held(shortcut_key)
+                )
+            ):
+                self._handle_edit_mode_shortcut(shortcut_key, pressed)
+                return True
         if pressed and self._event_matches(key_event, "picker") and not editing_text:
             self._set_picker_held(pressed)
             return True
@@ -828,9 +859,6 @@ class MainWindow(QMainWindow):
             and key_event.key() == picker_sequence[0].key()
         ):
             self._set_picker_held(False)
-            return True
-        if self._event_matches(key_event, "threshold_bypass") and not editing_text:
-            self._threshold_bypass_held = pressed
             return True
         if self._event_matches(key_event, "hide_labels_hold") and (
             (pressed and not editing_text) or self._labels_hidden_held
@@ -1385,13 +1413,12 @@ class MainWindow(QMainWindow):
         self._redo_stack.clear()
         self._last_clicked_slice_plane = None
         self._maximized_plane = None
-        self._all_frames_held = False
-        self._threshold_bypass_held = False
+        self._clear_edit_mode_holds()
         self._set_labels_hidden_held(False)
         self._set_picker_held(False)
         self._hover_status_context = None
         self.cursor_status.clear()
-        self.all_frames_toggle.setChecked(False)
+        self._clear_edit_modes()
         self.tool_actions["brush"].setChecked(True)
         self._set_tool("brush")
 
@@ -1945,7 +1972,8 @@ class MainWindow(QMainWindow):
         self._stroke_mask = mask
         self._stroke_tool = effective_tool
         self._stroke_label_value = self.active_label_value
-        self._stroke_ignore_threshold = self._threshold_bypass_held
+        self._mark_held_edit_mode_shortcuts_used_for_stroke()
+        self._stroke_ignore_threshold = self._threshold_bypass_active()
         self._stroke_frame = self.cursor[3]
         self._stroke_context = self._plane_context(plane)
         self._stroke_bounds = None
@@ -2057,6 +2085,21 @@ class MainWindow(QMainWindow):
         if not planes:
             return 0
         selection = polygon_selection(planes[0].shape, points)
+        threshold_enabled = (
+            not self._stroke_ignore_threshold and self._applied_threshold_is_active()
+        )
+        if not threshold_enabled:
+            allowed_planes: list[np.ndarray | None] = [None] * len(planes)
+        elif plane in TEMPORAL_AXES:
+            threshold = self._active_threshold_selection()
+            allowed_planes = [self._array_plane(threshold, plane, None, self._stroke_context)]
+        else:
+            allowed_planes = [
+                self._array_spatial_frame(
+                    self._active_threshold_frame(frame), plane, self._stroke_context
+                )
+                for frame in self._stroke_frames
+            ]
         source = self.lasso_panel.source_value(self.active_label_value)
         target = (
             self.lasso_panel.target_value
@@ -2067,8 +2110,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self._tr("lasso_same_label"), 4000)
             return 0
         return sum(
-            transform_selected_labels(plane_data, selection, target, source)
-            for plane_data in planes
+            transform_selected_labels(
+                plane_data,
+                selection
+                if allowed is None
+                else selection & np.asarray(allowed, dtype=bool),
+                target,
+                source,
+            )
+            for plane_data, allowed in zip(planes, allowed_planes)
         )
 
     def _lasso_3d_started(self) -> None:
@@ -2079,6 +2129,8 @@ class MainWindow(QMainWindow):
         mask = self.active_mask
         if mask is None:
             return
+        self._mark_held_edit_mode_shortcuts_used_for_stroke()
+        self._lasso_3d_ignore_threshold = self._threshold_bypass_active()
         self._lasso_3d_mask = mask
         self._lasso_3d_focus_frame = self.cursor[3]
         self._lasso_3d_frames = self._spatial_edit_frames(
@@ -2112,11 +2164,24 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(self._tr("lasso_same_label"), 4000)
                 changed = 0
             else:
+                threshold_enabled = (
+                    not self._lasso_3d_ignore_threshold
+                    and self._applied_threshold_is_active()
+                )
+                selections = (
+                    [selection] * len(self._lasso_3d_frames)
+                    if not threshold_enabled
+                    else [
+                        selection
+                        & np.asarray(self._active_threshold_frame(frame), dtype=bool)
+                        for frame in self._lasso_3d_frames
+                    ]
+                )
                 changed = sum(
-                    transform_selected_labels(
-                        mask.data[..., frame], selection, target, source
+                    transform_selected_labels(mask.data[..., frame], frame_selection, target, source)
+                    for frame, frame_selection in zip(
+                        self._lasso_3d_frames, selections
                     )
-                    for frame in self._lasso_3d_frames
                 )
         except Exception as error:
             restore_frames(mask, self._lasso_3d_frames, before)
@@ -2153,6 +2218,7 @@ class MainWindow(QMainWindow):
         self._lasso_3d_mask = None
         self._lasso_3d_frames = ()
         self._lasso_3d_before = None
+        self._lasso_3d_ignore_threshold = False
 
     def _start_grow_stroke(self, plane: str, h: int, v: int) -> None:
         self._clear_grow_stroke_preview()
@@ -2565,7 +2631,7 @@ class MainWindow(QMainWindow):
     def _spatial_edit_frames(
         self, mask: Sequence4D, tool: str, focus_frame: int
     ) -> tuple[int, ...]:
-        if self.all_frames_toggle.isChecked() or self._all_frames_held:
+        if self._all_frames_edit_active():
             return tuple(range(mask.frame_count))
         return (focus_frame,)
 
@@ -3104,9 +3170,96 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _all_frames_toggled(self, enabled: bool) -> None:
+    def _edit_mode_toggled(self, mode: str, enabled: bool) -> None:
+        if self._updating_edit_modes:
+            return
+        if enabled:
+            self._updating_edit_modes = True
+            try:
+                for other_mode, toggle in self._edit_mode_toggles.items():
+                    if other_mode != mode:
+                        toggle.setChecked(False)
+            finally:
+                self._updating_edit_modes = False
+        message_keys = {
+            "all_frames": ("all_frames_on", "all_frames_off"),
+            "threshold_bypass": ("threshold_bypass_on", "threshold_bypass_off"),
+            "all_frames_bypass": (
+                "all_frames_bypass_on",
+                "all_frames_bypass_off",
+            ),
+        }
         self.statusBar().showMessage(
-            self._tr("all_frames_on" if enabled else "all_frames_off"), 4000
+            self._tr(message_keys[mode][0 if enabled else 1]), 4000
+        )
+
+    def _clear_edit_modes(self) -> None:
+        self._updating_edit_modes = True
+        try:
+            for toggle in self._edit_mode_toggles.values():
+                toggle.setChecked(False)
+        finally:
+            self._updating_edit_modes = False
+
+    def _clear_edit_mode_holds(self) -> None:
+        self._all_frames_held = False
+        self._threshold_bypass_held = False
+        self._all_frames_bypass_held = False
+        self._edit_mode_shortcuts_used_for_stroke.clear()
+
+    def _edit_mode_shortcut_is_held(self, shortcut_key: str) -> bool:
+        attributes = {
+            "all_frames_hold": "_all_frames_held",
+            "threshold_bypass": "_threshold_bypass_held",
+            "all_frames_bypass": "_all_frames_bypass_held",
+        }
+        return bool(getattr(self, attributes[shortcut_key]))
+
+    def _handle_edit_mode_shortcut(self, shortcut_key: str, pressed: bool) -> None:
+        attributes = {
+            "all_frames_hold": "_all_frames_held",
+            "threshold_bypass": "_threshold_bypass_held",
+            "all_frames_bypass": "_all_frames_bypass_held",
+        }
+        modes = {
+            "all_frames_hold": "all_frames",
+            "threshold_bypass": "threshold_bypass",
+            "all_frames_bypass": "all_frames_bypass",
+        }
+        if pressed:
+            setattr(self, attributes[shortcut_key], True)
+            self._edit_mode_shortcuts_used_for_stroke.discard(shortcut_key)
+            if self._stroke_mask is not None:
+                self._edit_mode_shortcuts_used_for_stroke.add(shortcut_key)
+            return
+        setattr(self, attributes[shortcut_key], False)
+        if shortcut_key not in self._edit_mode_shortcuts_used_for_stroke:
+            toggle = self._edit_mode_toggles[modes[shortcut_key]]
+            toggle.setChecked(not toggle.isChecked())
+        self._edit_mode_shortcuts_used_for_stroke.discard(shortcut_key)
+
+    def _mark_held_edit_mode_shortcuts_used_for_stroke(self) -> None:
+        if self._all_frames_held:
+            self._edit_mode_shortcuts_used_for_stroke.add("all_frames_hold")
+        if self._threshold_bypass_held:
+            self._edit_mode_shortcuts_used_for_stroke.add("threshold_bypass")
+        if self._all_frames_bypass_held:
+            self._edit_mode_shortcuts_used_for_stroke.add("all_frames_bypass")
+
+    def _threshold_bypass_active(self) -> bool:
+        return bool(
+            self.threshold_bypass_toggle.isChecked()
+            or self.all_frames_bypass_toggle.isChecked()
+            or self._threshold_bypass_held
+            or self._all_frames_bypass_held
+        )
+
+    def _all_frames_edit_active(self) -> bool:
+        return bool(
+            self.all_frames_toggle.isChecked()
+            or self.all_frames_bypass_toggle.isChecked()
+            or self._all_frames_held
+            or self._all_frames_bypass_held
         )
 
     def _update_mask_combo_text(self) -> None:
@@ -3125,6 +3278,8 @@ class MainWindow(QMainWindow):
         self.redo_action.setEnabled(bool(self._redo_stack))
         self.label_panel.setEnabled(has_mask)
         self.all_frames_toggle.setEnabled(has_mask)
+        self.threshold_bypass_toggle.setEnabled(has_mask)
+        self.all_frames_bypass_toggle.setEnabled(has_mask)
         self.threshold_panel.setEnabled(has_image)
         self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
         self.threshold_mask_action.setEnabled(has_image)

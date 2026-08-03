@@ -6,7 +6,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added three mutually exclusive drawing modes: all frames with threshold, current frame without threshold, and all frames without threshold. Each mode can be checked or invoked temporarily while holding its configurable shortcut during a stroke.
+
 ### Changed
+
+- The threshold-bypass shortcut no longer changes temporal-propagation range; propagation always uses its own panel settings.
 
 ### Fixed
 
