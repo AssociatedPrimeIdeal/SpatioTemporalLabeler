@@ -1050,7 +1050,7 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     assert window.threshold_panel.lower.suffix() == " %"
     assert window.threshold_panel.lower.singleStep() == 0.01
     assert window.threshold_panel.lower_slider.maximum() == 10_000
-    assert window.threshold_panel.lower_slider.orientation() == Qt.Orientation.Vertical
+    assert window.threshold_panel.lower_slider.orientation() == Qt.Orientation.Horizontal
     assert window.grow_panel.tolerance_control.slider.orientation() == Qt.Orientation.Horizontal
     assert window.grow_panel.tolerance.minimum() == 0.0
     assert window.grow_panel.tolerance.maximum() == 10.0
@@ -1081,7 +1081,7 @@ def test_threshold_and_window_sliders_update_live_and_are_independent():
     finish_window(window, mask)
 
 
-def test_temporal_sliders_are_horizontal_while_threshold_tracks_stay_vertical():
+def test_all_slider_tracks_are_horizontal():
     app = ensure_application()
     grow_panel = RegionGrowPanel()
     threshold_panel = ThresholdPanel()
@@ -1097,9 +1097,8 @@ def test_temporal_sliders_are_horizontal_while_threshold_tracks_stay_vertical():
     threshold_upper = threshold_panel.upper_slider
     assert grow_slider.width() > 128
     assert displacement_slider.width() > 128
-    assert threshold_lower.height() > 128
-    assert threshold_upper.height() > 128
-    assert threshold_panel.lower.height() < threshold_lower.height()
+    assert threshold_lower.width() > 128
+    assert threshold_upper.width() > 128
 
     grow_panel.close()
     threshold_panel.close()
@@ -1545,8 +1544,7 @@ def test_3d_viewer_uses_a_fast_mesh_while_time_navigation_is_active():
             cache_key=("mask", 1),
             interactive=True,
         )
-        viewer._timer.stop()
-        request = viewer._pending
+        request = viewer._active_request
         assert request is not None
         assert request.settings.smoothing == 0
         assert request.settings.detail == "performance"

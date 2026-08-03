@@ -58,7 +58,7 @@ class ThresholdPanel(QWidget):
         form.addRow(self.method_label, self.method)
 
         self.lower_control = FloatSliderSpin(
-            decimals=2, orientation=Qt.Orientation.Vertical
+            decimals=2, orientation=Qt.Orientation.Horizontal
         )
         self.lower_control.set_range(0.0, 100.0)
         self.lower_control.spin.setSuffix(" %")
@@ -69,7 +69,7 @@ class ThresholdPanel(QWidget):
         form.addRow(self.lower_label, self.lower_control)
 
         self.upper_control = FloatSliderSpin(
-            decimals=2, orientation=Qt.Orientation.Vertical
+            decimals=2, orientation=Qt.Orientation.Horizontal
         )
         self.upper_control.set_range(0.0, 100.0)
         self.upper_control.set_value(100.0)

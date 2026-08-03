@@ -73,7 +73,7 @@ class RegionGrowPanel(QWidget):
         self.set_language("en")
 
     def set_image_range(self, low: float, high: float) -> None:
-        # 容差直接使用原始图像强度单位，并以完整数据范围的 5% 作为默认值。
+        # 容差直接使用原始图像强度单位，并以活动序列有限值范围的 5% 作为默认值。
         span = max(abs(float(high) - float(low)), 1e-9)
         self.tolerance_control.set_range(0.0, span)
         self.tolerance_control.set_value(span * 0.05)

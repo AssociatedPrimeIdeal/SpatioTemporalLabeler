@@ -166,6 +166,15 @@ def _label_surface(
     surface.ComputeNormalsOff()
     surface.ComputeGradientsOff()
 
+    if settings.smoothing == 0 and settings.detail == "performance":
+        # 时间拖动时直接交给 GPU 绘制 Flying Edges 的结果，避免 CPU 在每帧
+        # 进行平滑、抽稀和重算法线，保证连续滑动能立即看到最新表面。
+        surface.ComputeNormalsOn()
+        surface.Update()
+        output = vtkPolyData()
+        output.DeepCopy(surface.GetOutput())
+        return output
+
     geometry_output = surface.GetOutputPort()
     if settings.smoothing > 0:
         smoother = vtkWindowedSincPolyDataFilter()
@@ -1082,7 +1091,10 @@ class Mask3DViewer(QWidget):
         if self._active_request is not None:
             return
         if prioritize:
-            self._timer.start(0)
+            # 鼠标连续拖动会持续占用主事件循环；这里直接提交轻量的后台任务，
+            # 不能再依赖 QTimer(0) 等待下一次空闲，否则只会在拖动结束后开始渲染。
+            self._timer.stop()
+            self._apply_pending()
             return
         elapsed_ms = (monotonic() - self._last_apply_time) * 1000.0
         if not self._timer.isActive():

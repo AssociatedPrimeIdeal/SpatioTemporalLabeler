@@ -8,7 +8,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- All value sliders, including threshold bounds, now use horizontal tracks.
+
 ### Fixed
+
+- 3D time navigation now starts its fast background surface request during continuous slider dragging instead of waiting for the mouse to stop; the performance preview bypasses CPU smoothing, decimation, and normal recomputation.
 
 ## 0.3.5 - 2026-08-03
 
