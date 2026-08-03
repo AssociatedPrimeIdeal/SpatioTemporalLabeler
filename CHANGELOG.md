@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.7 - 2026-08-03
+
+### Added
+
 - Added three mutually exclusive drawing modes: all frames with threshold, current frame without threshold, and all frames without threshold. Each mode can be checked or invoked temporarily while holding its configurable shortcut during a stroke.
 
 ### Changed
