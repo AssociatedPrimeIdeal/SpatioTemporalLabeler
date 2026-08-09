@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.3.9 - 2026-08-09
+
+### Added
+
 - The X-T, Y-T, and Z-T views now offer a persisted display-only time-axis stretch: use the header button or `V` to cycle 1x, 2x, and 4x for clearer inspection of coarse temporal data.
 
 ### Changed
