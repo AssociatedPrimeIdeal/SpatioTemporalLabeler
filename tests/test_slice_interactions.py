@@ -326,3 +326,30 @@ def test_x_spatial_and_temporal_views_run_from_right_to_left():
     for view in [*spatial_views, temporal_view]:
         view.close()
         view.deleteLater()
+
+
+def test_temporal_time_stretch_expands_only_the_display_time_axis():
+    ensure_application()
+    view = TemporalView()
+    view.set_time_stretch(4.0)
+    view.set_sequence_slice(
+        np.zeros((8, 3), dtype=np.float32),
+        None,
+        "Y-T",
+        2.5,
+        (0.0, 1.0),
+        1,
+        "X 0, Z 0",
+        cursor=(3, 1),
+    )
+
+    assert view.time_stretch == 4.0
+    assert view.getViewBox().state["aspectLocked"]
+    assert view._data_rect is not None
+    assert view._data_rect.width() == 20.0
+    assert view._data_rect.height() == 12.0
+    assert view.time_line.value() == 4.0
+    assert view.spatial_line.value() == 7.5
+
+    view.close()
+    view.deleteLater()

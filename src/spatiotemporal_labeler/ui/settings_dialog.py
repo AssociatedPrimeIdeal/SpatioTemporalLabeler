@@ -36,6 +36,7 @@ DEFAULT_SHORTCUTS = {
     "all_frames_bypass": "W",
     "hide_labels_hold": "H",
     "reset_view": "R",
+    "temporal_stretch": "V",
     "previous_time": "Left",
     "next_time": "Right",
 }
@@ -53,6 +54,7 @@ SHORTCUT_LABELS = {
         "all_frames_bypass": "All frames, ignore threshold",
         "hide_labels_hold": "Hold to hide 2D labels",
         "reset_view": "Reset 2D view",
+        "temporal_stretch": "Cycle temporal time stretch",
         "previous_time": "Previous time frame",
         "next_time": "Next time frame",
     },
@@ -68,6 +70,7 @@ SHORTCUT_LABELS = {
         "all_frames_bypass": "全帧且忽略阈值",
         "hide_labels_hold": "按住隐藏二维标签",
         "reset_view": "恢复二维视图",
+        "temporal_stretch": "切换时空视图时间轴拉伸",
         "previous_time": "上一时间帧",
         "next_time": "下一时间帧",
     },
@@ -253,6 +256,7 @@ class SettingsDialog(QDialog):
                 "all_frames_bypass",
                 "hide_labels_hold",
                 "reset_view",
+                "temporal_stretch",
                 "previous_time",
                 "next_time",
             )

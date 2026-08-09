@@ -763,6 +763,7 @@ class TemporalView(pg.PlotWidget):
         super().__init__(parent=parent, background="#101719")
         self.mode = "X-T"
         self.spacing = 1.0
+        self.time_stretch = 1.0
         self._data_rect: QRectF | None = None
         self._geometry_signature: tuple[float, ...] | None = None
         self.image_item = EditableImageItem()
@@ -845,6 +846,17 @@ class TemporalView(pg.PlotWidget):
     def set_editing_footprint(self, diameter_mm: float, shape: str, tool: str) -> None:
         self.footprint.configure(diameter_mm, shape, tool)
 
+    def set_time_stretch(self, value: float) -> None:
+        """Set the display-only scale for the time axis."""
+
+        stretch = float(value)
+        if not np.isfinite(stretch) or stretch <= 0.0:
+            raise ValueError("Temporal time stretch must be a positive finite value")
+        self.time_stretch = stretch
+        # An unlocked view fits any data rectangle to the same viewport, which
+        # would visually cancel a coordinate-only time stretch.
+        self.getViewBox().setAspectLocked(stretch != 1.0)
+
     def clear_view(self) -> None:
         for item in (
             self.image_item,
@@ -887,9 +899,16 @@ class TemporalView(pg.PlotWidget):
     ) -> None:
         self.mode = mode
         self.spacing = spacing
-        self.footprint.set_spacing((spacing, 1.0), (spacing, spacing))
+        self.footprint.set_spacing(
+            (spacing, self.time_stretch), (spacing, spacing)
+        )
         width, height = image.shape
-        rect = QRectF(-0.5 * spacing, -0.5, width * spacing, float(height))
+        rect = QRectF(
+            -0.5 * spacing,
+            -0.5 * self.time_stretch,
+            width * spacing,
+            float(height) * self.time_stretch,
+        )
         self.image_item.setImage(image.T, autoLevels=False, levels=levels)
         self.image_item.setRect(rect)
         if threshold is None:
@@ -915,12 +934,12 @@ class TemporalView(pg.PlotWidget):
             self.set_mask_overlay(None, labels, global_opacity=global_opacity)
         else:
             self.set_mask_overlay(mask, labels, rect, global_opacity)
-        self.time_line.setValue(time_index)
+        self.time_line.setValue(time_index * self.time_stretch)
         if cursor is not None:
             self.spatial_line.show()
             self.time_line.show()
             self.spatial_line.setValue(cursor[0] * spacing)
-            self.time_line.setValue(cursor[1])
+            self.time_line.setValue(cursor[1] * self.time_stretch)
         self.getPlotItem().setTitle(
             f"{mode}  |  {fixed_text}", color="#dce8e9", size="10pt"
         )
@@ -931,7 +950,7 @@ class TemporalView(pg.PlotWidget):
         self.spatial_line.setPen(
             pg.mkPen(AXIS_COLORS[axis], width=1.3, style=Qt.PenStyle.DashLine)
         )
-        signature = (float(width), float(height), float(spacing))
+        signature = (float(width), float(height), float(spacing), self.time_stretch)
         self._data_rect = rect
         if signature != self._geometry_signature:
             self._geometry_signature = signature
@@ -977,14 +996,16 @@ class TemporalView(pg.PlotWidget):
             self.contour_item.setData([], [])
             return
         x = [point[0] * self.spacing for point in points]
-        y = [point[1] for point in points]
+        y = [point[1] * self.time_stretch for point in points]
         self.contour_item.setData(x, y, connect="finite")
 
     def set_lasso(self, points: list[tuple[int, int]]) -> None:
-        self.lasso_overlay.set_points(points, (self.spacing, 1.0))
+        self.lasso_overlay.set_points(points, (self.spacing, self.time_stretch))
 
     def _pan(self, delta_h: float, delta_v: float) -> None:
-        self.getViewBox().translateBy(x=-delta_h * self.spacing, y=-delta_v)
+        self.getViewBox().translateBy(
+            x=-delta_h * self.spacing, y=-delta_v * self.time_stretch
+        )
 
     def reset_view(self) -> None:
         if self._data_rect is not None:

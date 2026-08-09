@@ -939,6 +939,37 @@ def test_2d_views_do_not_show_hover_operation_tooltips():
     finish_window(window, mask)
 
 
+def test_temporal_stretch_shortcut_cycles_the_persisted_display_scale():
+    image_data = np.ones((5, 4, 2, 3), dtype=np.float32)
+    window, _image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window._set_temporal_time_stretch(1.0)
+    window.shortcuts["temporal_stretch"] = "V"
+    window.isActiveWindow = lambda: True
+    window.refresh_views()
+    pressed = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_V,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert window.eventFilter(window, pressed)
+    assert window.temporal_view.time_stretch == 2.0
+    assert window.temporal_view.getViewBox().state["aspectLocked"]
+    assert window._temporal_time_stretch == 2.0
+    assert "2x" in window.temporal_stretch_button.toolTip()
+    assert window.temporal_view._data_rect is not None
+    assert window.temporal_view._data_rect.height() == 6.0
+
+    assert window.eventFilter(window, pressed)
+    assert window.temporal_view.time_stretch == 4.0
+    assert window.eventFilter(window, pressed)
+    assert window.temporal_view.time_stretch == 1.0
+    assert not window.temporal_view.getViewBox().state["aspectLocked"]
+    finish_window(window, mask)
+
+
 def test_hide_labels_hold_shortcut_hides_and_restores_every_2d_overlay():
     image_data = np.ones((5, 6, 2, 3), dtype=np.float32)
     mask_data = np.ones(image_data.shape, dtype=np.uint8)

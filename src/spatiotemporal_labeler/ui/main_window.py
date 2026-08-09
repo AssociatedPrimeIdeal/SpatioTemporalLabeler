@@ -95,6 +95,7 @@ AXIS_NAMES = ("X", "Y", "Z", "T")
 MEDICAL_IMAGE_FILTER = "Medical images (*.nrrd *.nii *.nii.gz)"
 MASK_NAME_TOKENS = ("seg", "mask", "label")
 MAX_GROW_STROKE_SEEDS = 500_000
+TEMPORAL_TIME_STRETCHES = (1.0, 2.0, 4.0)
 
 
 @dataclass
@@ -136,6 +137,9 @@ class MainWindow(QMainWindow):
         self.active_label_value = 1
         self._levels = (0.0, 1.0)
         self._image_value_range = (0.0, 1.0)
+        self._temporal_time_stretch = self._normalize_temporal_time_stretch(
+            self.settings.value("temporal/time_stretch", 1.0)
+        )
         self._image_levels: dict[int, tuple[float, float]] = {}
         self._threshold_cache: np.ndarray | None = None
         self._threshold_signature: tuple[object, ...] | None = None
@@ -280,8 +284,16 @@ class MainWindow(QMainWindow):
         self.temporal_mode.addItems(["X-T", "Y-T", "Z-T"])
         self.temporal_mode.currentIndexChanged.connect(self._temporal_mode_changed)
         temporal_header.addWidget(self.temporal_mode)
+        self.temporal_stretch_button = QToolButton()
+        self.temporal_stretch_button.setIcon(tool_icon("stretch", "#53666a"))
+        self.temporal_stretch_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self.temporal_stretch_button.clicked.connect(self._cycle_temporal_time_stretch)
+        temporal_header.addWidget(self.temporal_stretch_button)
         temporal_layout.addLayout(temporal_header)
         self.temporal_view = TemporalView()
+        self.temporal_view.set_time_stretch(self._temporal_time_stretch)
         self.temporal_view.strokeStarted.connect(self._stroke_started)
         self.temporal_view.strokeMoved.connect(self._stroke_moved)
         self.temporal_view.strokeFinished.connect(self._stroke_finished)
@@ -716,6 +728,7 @@ class MainWindow(QMainWindow):
         self.image_source_label.setText(self._tr("display_image"))
         self.mask_source_label.setText(self._tr("edit_mask"))
         self.temporal_header_label.setText(self._tr("temporal_view"))
+        self._update_temporal_stretch_tooltip()
         self.render_title.setText(self._tr("render_3d"))
         self.render_toggle.setText(self._tr("render_enabled"))
         self.render_toggle.setToolTip(self._tr("render_enabled_tip"))
@@ -810,6 +823,46 @@ class MainWindow(QMainWindow):
         ):
             self.tool_actions[key].setShortcut(QKeySequence(self.shortcuts.get(key, "")))
         self.tool_actions["picker"].setShortcut(QKeySequence())
+        self._update_temporal_stretch_tooltip()
+
+    @staticmethod
+    def _normalize_temporal_time_stretch(value: object) -> float:
+        try:
+            requested = float(value)
+        except (TypeError, ValueError):
+            return TEMPORAL_TIME_STRETCHES[0]
+        return min(TEMPORAL_TIME_STRETCHES, key=lambda option: abs(option - requested))
+
+    def _update_temporal_stretch_tooltip(self) -> None:
+        if not hasattr(self, "temporal_stretch_button"):
+            return
+        shortcut = self.shortcuts.get("temporal_stretch", "")
+        self.temporal_stretch_button.setToolTip(
+            self._tr(
+                "temporal_stretch_tip",
+                value=int(self._temporal_time_stretch),
+                shortcut=shortcut,
+            )
+        )
+
+    def _set_temporal_time_stretch(self, value: float) -> None:
+        stretch = self._normalize_temporal_time_stretch(value)
+        if stretch == self._temporal_time_stretch:
+            return
+        self._temporal_time_stretch = stretch
+        self.settings.setValue("temporal/time_stretch", stretch)
+        self.temporal_view.set_time_stretch(stretch)
+        self._update_temporal_stretch_tooltip()
+        self.refresh_views()
+        self.statusBar().showMessage(
+            self._tr("temporal_stretch_changed", value=int(stretch)), 2500
+        )
+
+    def _cycle_temporal_time_stretch(self) -> None:
+        current = TEMPORAL_TIME_STRETCHES.index(self._temporal_time_stretch)
+        self._set_temporal_time_stretch(
+            TEMPORAL_TIME_STRETCHES[(current + 1) % len(TEMPORAL_TIME_STRETCHES)]
+        )
 
     def _event_matches(self, event: QKeyEvent, shortcut_key: str) -> bool:
         sequence = QKeySequence(self.shortcuts.get(shortcut_key, ""))
@@ -887,6 +940,9 @@ class MainWindow(QMainWindow):
                 if self.image_previews.reset_hovered_preview(watched):
                     return True
                 self._reset_2d_views()
+                return True
+            if self._event_matches(key_event, "temporal_stretch"):
+                self._cycle_temporal_time_stretch()
                 return True
         return super().eventFilter(watched, event)
 

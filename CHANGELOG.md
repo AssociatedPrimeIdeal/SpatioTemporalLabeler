@@ -6,9 +6,13 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- The X-T, Y-T, and Z-T views now offer a persisted display-only time-axis stretch: use the header button or `V` to cycle 1x, 2x, and 4x for clearer inspection of coarse temporal data.
+
 ### Changed
 
 ### Fixed
+
+- The no-op propagation message now identifies invalid, already-labeled, threshold-blocked, and other-label-blocked targets instead of looking like a failed action.
 
 ## 0.3.8 - 2026-08-03
 

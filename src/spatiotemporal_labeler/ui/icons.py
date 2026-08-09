@@ -56,6 +56,14 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawEllipse(QRectF(9, 9, 6, 6))
             painter.drawArc(QRectF(5, 5, 14, 14), 15 * 16, 240 * 16)
             painter.drawArc(QRectF(2.5, 2.5, 19, 19), 195 * 16, 210 * 16)
+        elif name == "stretch":
+            painter.drawLine(QPointF(7, 4), QPointF(7, 20))
+            painter.drawLine(QPointF(17, 4), QPointF(17, 20))
+            painter.drawLine(QPointF(12, 7), QPointF(12, 17))
+            painter.drawLine(QPointF(9, 10), QPointF(12, 7))
+            painter.drawLine(QPointF(15, 10), QPointF(12, 7))
+            painter.drawLine(QPointF(9, 14), QPointF(12, 17))
+            painter.drawLine(QPointF(15, 14), QPointF(12, 17))
         elif name == "threshold":
             painter.drawRect(QRectF(4, 5, 16, 14))
             painter.drawLine(QPointF(7, 15), QPointF(17, 15))
