@@ -5,12 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spatiotemporal-labeler"
 version = "0.3.9"
-description = "Cross-platform 3D+t medical image segmentation editor"
+description = "Cross-platform desktop editor for manual and semi-automatic 3D/4D medical image segmentation"
 readme = "README.md"
 license = "GPL-3.0-only"
 authors = [{ name = "AssociatedPrimeIdeal" }]
 requires-python = ">=3.9"
-keywords = ["medical-imaging", "segmentation", "nrrd", "nifti", "pyside6", "vtk", "4d", "4d-flow"]
+keywords = [
+    "medical-imaging",
+    "medical-image-segmentation",
+    "image-segmentation",
+    "image-annotation",
+    "manual-segmentation",
+    "segmentation-editor",
+    "4d-imaging",
+    "4d-flow-mri",
+    "dynamic-mri",
+    "time-resolved-mri",
+    "mri",
+    "nifti",
+    "nrrd",
+    "medical-image-analysis",
+    "3d-visualization",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: Qt",

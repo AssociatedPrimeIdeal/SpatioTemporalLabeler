@@ -171,7 +171,7 @@ jobs:
           files: release-assets/*
           fail_on_unmatched_files: true
           # 默认保留草稿，避免公开发布和 Release 通知。
-          draft: true
+          draft: false
 
   pypi:
     name: Publish to PyPI

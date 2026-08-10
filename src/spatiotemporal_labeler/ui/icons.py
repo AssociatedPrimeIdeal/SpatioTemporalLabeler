@@ -86,12 +86,6 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawEllipse(QRectF(11.5, 4.5, 9, 9))
             painter.drawLine(QPointF(7, 19), QPointF(17, 19))
             painter.drawLine(QPointF(12, 16), QPointF(12, 22))
-        elif name == "interpolate":
-            painter.drawRoundedRect(QRectF(3.5, 4.5, 6, 6), 1, 1)
-            painter.drawRoundedRect(QRectF(14.5, 13.5, 6, 6), 1, 1)
-            painter.drawEllipse(QRectF(10.5, 9.5, 3, 3))
-            painter.drawLine(QPointF(9.5, 9.5), QPointF(11, 10.5))
-            painter.drawLine(QPointF(13, 12.5), QPointF(14.5, 14))
         elif name == "image":
             painter.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 1.5, 1.5)
             painter.drawEllipse(QRectF(7, 8, 2.5, 2.5))

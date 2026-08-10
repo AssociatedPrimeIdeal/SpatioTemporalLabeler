@@ -65,7 +65,6 @@ from spatiotemporal_labeler.tools import (
     fill_polygon,
     RegionGrowConfig,
     grow_region_4d,
-    interpolate_label_frames,
     polygon_selection,
     raster_line,
     strongest_signal_frame,
@@ -76,7 +75,6 @@ from .icons import tool_icon
 from .frame_mapping_dialog import FrameMappingDialog
 from .image_strip import ImagePreviewStrip
 from .import_dialog import ImportSelectionDialog
-from .interpolation_panel import InterpolationPanel
 from .label_panel import LabelPanel
 from .lasso_panel import LassoPanel
 from .morphology_panel import MorphologyPanel
@@ -458,16 +456,6 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.morphology_dock)
         self.morphology_dock.hide()
 
-        self.interpolation_dock = QDockWidget(self)
-        self.interpolation_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.interpolation_panel = InterpolationPanel()
-        self.interpolation_panel.applyRequested.connect(self._apply_interpolation)
-        self.interpolation_dock.setWidget(self.interpolation_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.interpolation_dock)
-        self.interpolation_dock.hide()
-
         self.display_dock = QDockWidget(self)
         self.display_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -480,8 +468,7 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.threshold_dock, self.grow_dock)
         self.tabifyDockWidget(self.grow_dock, self.lasso_dock)
         self.tabifyDockWidget(self.lasso_dock, self.morphology_dock)
-        self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
-        self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
+        self.tabifyDockWidget(self.morphology_dock, self.display_dock)
 
     def _build_actions(self) -> None:
         self.toolbar = QToolBar()
@@ -569,12 +556,6 @@ class MainWindow(QMainWindow):
         self.morphology_button.setDefaultAction(self.morphology_action)
         self.morphology_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.toolbar.addWidget(self.morphology_button)
-        self.interpolation_action = self.interpolation_dock.toggleViewAction()
-        self.interpolation_action.setIcon(tool_icon("interpolate", "#3f6f9e"))
-        self.interpolation_button = QToolButton()
-        self.interpolation_button.setDefaultAction(self.interpolation_action)
-        self.interpolation_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.toolbar.addWidget(self.interpolation_button)
         self.display_action = self.display_dock.toggleViewAction()
         self.display_action.setIcon(tool_icon("window", "#53666a"))
         self.display_button = QToolButton()
@@ -621,7 +602,6 @@ class MainWindow(QMainWindow):
         self.view_menu.addAction(self.threshold_dock.toggleViewAction())
         self.view_menu.addAction(self.grow_dock.toggleViewAction())
         self.view_menu.addAction(self.morphology_action)
-        self.view_menu.addAction(self.interpolation_action)
         self.view_menu.addAction(self.display_action)
         self.language_menu = self.view_menu.addMenu("")
         language_group = QActionGroup(self)
@@ -769,8 +749,6 @@ class MainWindow(QMainWindow):
         self.lasso_dock.setWindowTitle(self._tr("lasso_dock"))
         self.morphology_dock.setWindowTitle(self._tr("morphology_dock"))
         self.morphology_action.setText(self._tr("morphology"))
-        self.interpolation_dock.setWindowTitle(self._tr("interpolation_dock"))
-        self.interpolation_action.setText(self._tr("interpolation"))
         self.display_dock.setWindowTitle(self._tr("display_dock"))
         self.display_action.setText(self._tr("display_dock"))
         self.file_menu.setTitle(self._tr("file"))
@@ -782,7 +760,6 @@ class MainWindow(QMainWindow):
         self.grow_panel.set_language(self.language)
         self.lasso_panel.set_language(self.language)
         self.morphology_panel.set_language(self.language)
-        self.interpolation_panel.set_language(self.language)
         self.window_level_panel.set_language(self.language)
         self.image_previews.set_language(self.language)
         self._refresh_cursor_status()
@@ -1489,7 +1466,6 @@ class MainWindow(QMainWindow):
         self.slider_axis.setCurrentIndex(0)
         self._slider_axis_changed()
         self._sync_label_panel()
-        self._sync_interpolation_panel()
         self._update_enabled_state()
         self.statusBar().showMessage(self._tr("load_start"))
         return True
@@ -1585,17 +1561,9 @@ class MainWindow(QMainWindow):
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._sync_label_panel()
-        self._sync_interpolation_panel()
         self._refresh_cursor_status()
         self.refresh_views(update_3d=True)
         self._update_enabled_state()
-
-    def _sync_interpolation_panel(self) -> None:
-        mask = self.active_mask
-        self.interpolation_panel.set_frame_count(
-            mask.frame_count if mask is not None else 1,
-            self.cursor[3],
-        )
 
     def _label_selected(self, value: int) -> None:
         self.active_label_value = value
@@ -2946,60 +2914,6 @@ class MainWindow(QMainWindow):
             self._tr("morphology_applied", count=command.flat_indices.size), 5000
         )
 
-    def _apply_interpolation(self) -> None:
-        mask = self.active_mask
-        if mask is None or not self.active_labels:
-            return
-        self._cancel_pending_contour(silent=True)
-        self._clear_lasso_overlays()
-        start = self.interpolation_panel.start_frame.value() - 1
-        end = self.interpolation_panel.end_frame.value() - 1
-        frames = tuple(range(start + 1, end))
-        if not frames:
-            QMessageBox.information(
-                self,
-                self._tr("interpolation_dock"),
-                self._tr("interpolation_frame_error"),
-            )
-            return
-        label_values = (
-            tuple(sorted(self.active_labels))
-            if self.interpolation_panel.labels_scope.currentData() == "all"
-            else (self.active_label_value,)
-        )
-        before = capture_frames(mask, frames)
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            mask.data[..., start + 1 : end] = interpolate_label_frames(
-                mask.data,
-                start,
-                end,
-                label_values,
-                spacing_xyz=mask.spacing_xyz,
-            )
-        except Exception as error:
-            restore_frames(mask, frames, before)
-            QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-
-        command = build_edit_command(mask, frames, before, self.cursor[3])
-        if command is None:
-            self.statusBar().showMessage(self._tr("interpolation_no_changes"), 3500)
-            return
-        mask.dirty = True
-        self._undo_stack.append(command)
-        self._undo_stack = self._undo_stack[-30:]
-        self._redo_stack.clear()
-        self._update_mask_combo_text()
-        self.refresh_views()
-        self._refresh_3d(dirty_values=command.changed_label_values())
-        self._update_enabled_state()
-        self.statusBar().showMessage(
-            self._tr("interpolation_applied", count=command.flat_indices.size), 5000
-        )
-
     def undo(self) -> None:
         if not self._undo_stack:
             return
@@ -3344,8 +3258,6 @@ class MainWindow(QMainWindow):
         self.lasso_panel.setEnabled(has_mask and has_label)
         self.morphology_panel.setEnabled(has_mask and has_label)
         self.morphology_action.setEnabled(has_mask and has_label)
-        self.interpolation_panel.setEnabled(has_mask and has_label and self.active_mask.frame_count >= 3)
-        self.interpolation_action.setEnabled(has_mask and has_label and self.active_mask.frame_count >= 3)
         self.window_level_panel.setEnabled(has_image)
         self.display_action.setEnabled(has_image)
         for action in self.tool_actions.values():

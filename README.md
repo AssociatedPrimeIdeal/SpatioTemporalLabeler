@@ -1,4 +1,4 @@
-# SpatioTemporal Labeler
+# SpatioTemporal Labeler: 4D Medical Image Segmentation Editor
 
 <p align="center">
   <img src="docs/assets/app-icon.png" alt="SpatioTemporal Labeler icon" width="180">
@@ -9,34 +9,20 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab)](https://www.python.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-SpatioTemporal Labeler is a cross-platform desktop editor for 3D and 3D+t medical image segmentation, including 4D flow MRI workflows. It combines linked spatial and temporal views with real-time 3D label rendering and metadata-preserving NRRD/NIfTI I/O.
+SpatioTemporal Labeler is a cross-platform desktop editor for manual and semi-automatic 3D/4D medical image segmentation. It supports dynamic and time-resolved MRI, including 4D flow MRI, in NIfTI and NRRD files, with linked spatial-temporal views, real-time 3D label rendering, temporal propagation, and metadata-preserving I/O.
 
 ![SpatioTemporal Labeler interface](docs/assets/application.png)
 
 ## Features
 
-- Linked X-Y, X-Z, Y-Z, and selectable X-T/Y-T/Z-T views
-- Automatic initial display of the frame with the strongest aggregate finite signal
-- Hover status with voxel indices, RAS coordinates, image intensity, and label value
-- Coalesced all-label 3D updates during time navigation
-- Multiple image sequences, label sequences, and integer labels
-- Unified image/label import classification, drag-and-drop, and resizable selectable-plane previews for other loaded images
-- Physical round or square brush and eraser footprints
-- Immediate 2D/3D scissors lasso for label erase or replacement, including all-time-frame edits
-- Closed-contour raster drawing with interior fill
-- Right-drag temporary erase, Shift-hover linked positioning, Shift-drag panning, and middle-drag window level/width with per-image persistence and live values in other-image previews
-- Optional all-time-frame spatial editing as one undoable operation
-- Applied threshold mask entry with percentage sliders, automatic methods, live candidate preview, replacement, checkbox/delete control, and bypass
-- Diverse per-label colors with double-click color editing, row-menu rename/opacity controls, and a global label opacity control
-- Live window level/width sliders in a separate display panel
-- Stroke-seeded temporal propagation with per-voxel intensity matching, configurable physical frame-to-frame displacement, label barriers, and optional replacement
-- Per-label morphology with physical `mm` radii and `mm³` component volumes
-- Physical signed-distance interpolation between user-selected label keyframes
-- Automatic all-frame replication or selected-frame placement when mapping 3D labels to a 4D image
-- Independent closed, smoothed, decimated surface rendering for each label
-- Persistent 3D style, lighting, smoothing, and detail controls in Settings
-- Metadata-preserving read/write for 3D/4D NRRD and NIfTI files
-- English and Simplified Chinese interface
+- Linked X-Y/X-Z/Y-Z spatial and X-T/Y-T/Z-T temporal views with a shared X/Y/Z/T cursor
+- Peak-signal frame selection, time navigation, and display-only temporal-axis stretch
+- Current-frame or all-frame label editing with physical brush/eraser footprints and one-gesture undo
+- Adjacent-frame temporal propagation using physical displacement, intensity matching, and label/threshold barriers
+- Synchronized 2D overlays and independently colored 3D label surfaces while navigating time
+- Separate threshold-mask constraints with all-frame editing and threshold-bypass modes
+- Multiple image/label sequences with RAS-mapped previews and 3D-label-to-4D frame mapping
+- Metadata-preserving 3D/4D NRRD and NIfTI read/write
 
 ## Install
 
@@ -84,32 +70,36 @@ You can also launch without arguments and load or drop NRRD/NIfTI files:
 spatiotemporal-labeler
 ```
 
-## Controls
+## Default Keyboard Shortcuts
 
 | Input | Action |
 | --- | --- |
-| Left drag | Use the selected brush, eraser, scissors lasso, contour, or temporal propagation tool |
-| Alt + left drag in 3D | Rotate the 3D camera |
+| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour fill, or temporal propagation |
+| Hold `I` / `H` | Pick labels / hide 2D label overlays |
+| Press/release `CapsLock`, `Q`, or `W` | Toggle all-frame threshold-constrained, current-frame threshold-bypass, or all-frame threshold-bypass editing; hold during a stroke for a temporary mode |
+| `[` / `]` | Decrease/increase brush or eraser diameter |
+| `Left` / `Right` | Previous/next time frame |
+| `Up` / `Down` | Next/previous orthogonal spatial slice |
+| `V` | Cycle X-T/Y-T/Z-T display-only time-axis stretch (1x/2x/4x) |
+| `R` | Reset the hovered preview or the main 2D views |
+| `Enter` / `Esc` | Apply a pending contour / cancel a contour or lasso |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
+| `Ctrl+W` | Close all loaded files |
+| `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` | Undo / redo |
+
+## Mouse Gestures
+
+| Input | Action |
+| --- | --- |
+| Left drag | Use the selected editing tool in a spatial view |
 | Right drag | Temporarily erase without changing the selected tool |
-| Hold Shift and move | Move the linked spatial cursor without editing |
-| Shift + left drag | Pan a 2D view |
-| Middle drag | Adjust window width horizontally and window level vertically in the dragged view |
-| Double-click an other-image preview | Make that image sequence active |
-| Double-click a label row | Change that label's color |
-| Ctrl + wheel | Zoom a 2D view |
-| Shift + wheel | Change brush or eraser diameter |
+| Hold `Shift` and move / `Shift` + left drag | Locate the shared cursor / pan a 2D view |
+| Middle drag in 2D / middle or right drag in 3D | Adjust window width and window level / pan and zoom |
+| `Ctrl` + wheel / `Shift` + wheel | Zoom a 2D view / change brush diameter |
 | Wheel in a spatial view | Change its orthogonal slice |
-| Drag a locator-line arrow | Move that X, Y, or Z cursor coordinate and update linked slices |
-| Double-click | Confirm a pending contour, otherwise fill/restore the entire 2x2 view panel |
-| `B`, `E`, `S`, `L`, `G` | Brush, eraser, scissors lasso, contour, or temporal propagation |
-| Hold `I` and move | Pick labels continuously without changing the selected tool |
-| Hold `H` | Temporarily hide all 2D label overlays |
-| `R` | Reset 2D zoom and pan, or auto-window and reset the hovered other-image preview |
-| Left / Right | Step through time frames |
-| Hold `CapsLock` | Temporarily apply spatial edits to all frames |
-| Hold `Q` | Bypass a checked applied threshold mask while drawing or erasing |
-| `Ctrl+Z`, `Ctrl+Y` | Undo or redo |
-| `Esc` | Cancel a pending contour or active lasso preview |
+| Alt + left drag in 3D | Rotate the 3D camera |
+| Double-click | Activate an image preview, change a label color, maximize a view, or confirm a contour depending on the target |
+| Drag a locator-line arrow | Move the linked X, Y, or Z cursor coordinate |
 
 Enable **All time frames** to apply ordinary spatial gestures in every frame. Temporal propagation has its own default all-frame range and does not use this option. It begins from a spatial-view source patch, then independently matches each voxel only into adjacent frames; it does not grow within a frame and stops in a direction after an unmatched frame.
 

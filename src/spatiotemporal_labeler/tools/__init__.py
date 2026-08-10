@@ -8,7 +8,6 @@ from .editing import (
     raster_line,
     transform_selected_labels,
 )
-from .interpolation import interpolate_label_frames
 from .intensity import strongest_signal_frame
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
@@ -41,7 +40,6 @@ __all__ = [
     "build_threshold_mask",
     "connected_seed_region",
     "fill_polygon",
-    "interpolate_label_frames",
     "kittler_threshold",
     "remove_small_components",
     "remove_small_components_4d",

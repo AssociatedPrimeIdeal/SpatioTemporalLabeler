@@ -8,6 +8,12 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- Updated project metadata and documentation to make the editor easier to discover for 3D/4D medical image segmentation, dynamic MRI, 4D flow MRI, NIfTI, and NRRD users.
+
+### Removed
+
+- Removed the keyframe label interpolation tool and its toolbar, dock, translations, and public editing helper.
+
 ### Fixed
 
 ## 0.3.9 - 2026-08-09

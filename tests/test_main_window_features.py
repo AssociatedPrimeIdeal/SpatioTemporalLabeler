@@ -1217,25 +1217,6 @@ def test_close_all_files_saves_dirty_masks_before_reset(monkeypatch):
     finish_window(window, mask)
 
 
-def test_keyframe_interpolation_is_one_undoable_edit():
-    image_data = np.ones((9, 9, 1, 3), dtype=np.float32)
-    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
-    mask_data[1:4, 3:6, 0, 0] = 1
-    mask_data[3:6, 3:6, 0, 2] = 1
-    window, _image, mask = make_window(image_data, mask_data)
-    original = mask.data.copy()
-    window.interpolation_panel.start_frame.setValue(1)
-    window.interpolation_panel.end_frame.setValue(3)
-
-    window._apply_interpolation()
-
-    assert np.count_nonzero(mask.data[..., 1]) == 9
-    assert len(window._undo_stack) == 1
-    window.undo()
-    assert np.array_equal(mask.data, original)
-    finish_window(window, mask)
-
-
 def test_loading_3d_labels_can_copy_all_frames_or_target_one(monkeypatch):
     ensure_application()
     window = MainWindow()
