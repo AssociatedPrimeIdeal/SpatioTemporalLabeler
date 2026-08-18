@@ -8,6 +8,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+### Fixed
+
+## 0.4.1 - 2026-08-18
+
+### Added
+
+### Changed
+
 - The strongest-signal frame is selected only when the first image is loaded; switching between loaded images now preserves the current RAS position and clamps only out-of-range coordinates.
 
 ### Performance
