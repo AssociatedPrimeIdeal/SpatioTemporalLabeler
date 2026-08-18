@@ -67,6 +67,36 @@ def test_active_image_starts_on_the_strongest_signal_frame():
     finish_window(window, mask)
 
 
+def test_switching_images_preserves_ras_position_and_time_frame():
+    image_data = np.zeros((8, 7, 6, 4), dtype=np.float32)
+    window, first, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    second = make_sequence(np.zeros((10, 9, 8, 2), dtype=np.float32))
+    second.transform = AxisTransform(
+        original_axis_for_canonical=(0, 1, 2, 3),
+        flipped_canonical_axes=(False, False, False),
+        spacing_xyz=(0.5, 1.0, 2.0),
+        origin_ras=(1.0, 2.0, 3.0),
+        direction_ras=np.eye(3),
+    )
+    window.images.append(second)
+    window.image_combo.addItem("second")
+    window.cursor = [3, 2, 1, 3]
+    world = np.asarray(first.transform.origin_ras) + np.asarray(first.transform.direction_ras) @ (
+        np.asarray(window.cursor[:3]) * np.asarray(first.spacing_xyz)
+    )
+    window.image_combo.setCurrentIndex(1)
+    expected = np.rint(
+        (world - np.asarray(second.transform.origin_ras))
+        / np.asarray(second.spacing_xyz)
+    ).astype(int)
+    expected = np.clip(expected, 0, np.asarray(second.data.shape[:3]) - 1)
+    assert window.cursor[:3] == expected.tolist()
+    assert window.cursor[3] == 1
+    finish_window(window, mask)
+
+
 def test_add_label_suggests_the_first_unused_positive_value(monkeypatch):
     image_data = np.ones((3, 3, 1, 1), dtype=np.float32)
     window, _image, mask = make_window(

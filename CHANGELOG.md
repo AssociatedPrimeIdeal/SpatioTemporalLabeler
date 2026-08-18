@@ -8,6 +8,13 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- The strongest-signal frame is selected only when the first image is loaded; switching between loaded images now preserves the current RAS position and clamps only out-of-range coordinates.
+
+### Performance
+
+- Morphology operations now reuse cached connectivity and physical structuring elements across frames.
+- Morphology now reports progress in a modal, cancellable dialog while keeping the calculation on the UI thread as requested.
+
 ### Fixed
 
 ## 0.4.0 - 2026-08-11

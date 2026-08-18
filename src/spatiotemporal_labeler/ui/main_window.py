@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSlider,
     QSplitter,
     QSizePolicy,
@@ -131,6 +132,8 @@ class MainWindow(QMainWindow):
         self.images: list[Sequence4D] = []
         self.masks: list[Sequence4D] = []
         self.cursor = [0, 0, 0, 0]
+        self._cursor_initialized = False
+        self._last_active_image: Sequence4D | None = None
         self.tool = "brush"
         self.active_label_value = 1
         self._levels = (0.0, 1.0)
@@ -1430,6 +1433,8 @@ class MainWindow(QMainWindow):
         self.mask_combo.blockSignals(False)
         self.images.clear()
         self.masks.clear()
+        self._cursor_initialized = False
+        self._last_active_image = None
         self._mask_labels.clear()
         self._image_levels.clear()
 
@@ -1480,10 +1485,36 @@ class MainWindow(QMainWindow):
         if image is None:
             self.refresh_views()
             return
-        self.cursor = [
-            *(max(0, size // 2) for size in image.data.shape[:3]),
-            strongest_signal_frame(image.data),
-        ]
+        if not self._cursor_initialized:
+            # Pick a useful initial time once; image switching preserves location.
+            self.cursor = [
+                *(max(0, size // 2) for size in image.data.shape[:3]),
+                strongest_signal_frame(image.data),
+            ]
+            self._cursor_initialized = True
+        else:
+            previous_image = self._last_active_image
+            if previous_image is not None:
+                previous_xyz = np.asarray(self.cursor[:3], dtype=float)
+                previous_world = np.asarray(previous_image.transform.origin_ras, dtype=float) + (
+                    np.asarray(previous_image.transform.direction_ras, dtype=float)
+                    @ (previous_xyz * np.asarray(previous_image.spacing_xyz, dtype=float))
+                )
+                target_xyz = np.linalg.solve(
+                    np.asarray(image.transform.direction_ras, dtype=float),
+                    previous_world - np.asarray(image.transform.origin_ras, dtype=float),
+                ) / np.asarray(image.spacing_xyz, dtype=float)
+                self.cursor[:3] = [
+                    int(np.clip(round(float(value)), 0, size - 1))
+                    for value, size in zip(target_xyz, image.data.shape[:3])
+                ]
+            else:
+                self.cursor[:3] = [
+                    int(np.clip(value, 0, size - 1))
+                    for value, size in zip(self.cursor[:3], image.data.shape[:3])
+                ]
+            self.cursor[3] = int(np.clip(self.cursor[3], 0, image.frame_count - 1))
+        self._last_active_image = image
         sample = image.data.flat[:: max(1, image.data.size // 500_000)]
         finite = sample[np.isfinite(sample)]
         if finite.size:
@@ -2871,6 +2902,27 @@ class MainWindow(QMainWindow):
                 else (self.cursor[3],)
             )
         before = capture_frames(mask, frames)
+        progress_units = len(label_values) if use_whole_sequence_4d else len(frames) * len(label_values)
+        progress = QProgressDialog(
+            self._tr("morphology_running"),
+            self._tr("cancel"),
+            0,
+            max(1, progress_units),
+            self,
+        )
+        progress.setWindowTitle(self._tr("morphology_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress_units_done = 0
+
+        def check_progress() -> bool:
+            nonlocal progress_units_done
+            progress_units_done += 1
+            progress.setValue(min(progress_units_done, progress_units))
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             if use_whole_sequence_4d:
@@ -2879,9 +2931,10 @@ class MainWindow(QMainWindow):
                     label_values,
                     spacing_xyz=mask.spacing_xyz,
                     minimum_volume_mm3=self.morphology_panel.minimum_volume.value(),
+                    progress=check_progress,
                 )
             else:
-                for frame in frames:
+                for frame_index, frame in enumerate(frames):
                     mask.data[..., frame] = apply_label_morphology(
                         mask.data[..., frame],
                         operation,
@@ -2890,13 +2943,23 @@ class MainWindow(QMainWindow):
                         minimum_volume_mm3=self.morphology_panel.minimum_volume.value(),
                         connectivity=int(self.morphology_panel.connectivity.currentData()),
                         radius_mm=self.morphology_panel.radius.value(),
+                        progress=check_progress,
                     )
+                    progress.setValue(
+                        min((frame_index + 1) * len(label_values), progress_units)
+                    )
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        raise RuntimeError("Morphology cancelled")
+            progress.setValue(progress_units)
         except Exception as error:
             restore_frames(mask, frames, before)
-            QMessageBox.critical(self, self._tr("morphology_failed"), str(error))
+            if not progress.wasCanceled():
+                QMessageBox.critical(self, self._tr("morphology_failed"), str(error))
             return
         finally:
             QApplication.restoreOverrideCursor()
+            progress.close()
 
         command = build_edit_command(mask, frames, before, self.cursor[3])
         if command is None:

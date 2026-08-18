@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
@@ -15,6 +16,7 @@ MORPHOLOGY_OPERATIONS = (
 )
 
 
+@lru_cache(maxsize=64)
 def _connectivity_structure(
     shape: tuple[int, ...], connectivity: int
 ) -> NDArray[np.bool_]:
@@ -81,6 +83,7 @@ def remove_small_components_4d(
     return keep[components]
 
 
+@lru_cache(maxsize=64)
 def physical_ball(
     shape: tuple[int, ...],
     spacing_xyz: tuple[float, float, float],
@@ -120,6 +123,7 @@ def apply_label_morphology(
     minimum_volume_mm3: float = 100.0,
     connectivity: int = 1,
     radius_mm: float = 1.0,
+    progress: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Apply one binary operation per label while preserving neighboring labels.
 
@@ -141,6 +145,8 @@ def apply_label_morphology(
     )
     transformed: dict[int, NDArray[np.bool_]] = {}
     for value in values:
+        if progress is not None and not progress():
+            raise RuntimeError("Morphology cancelled")
         binary = source == value
         if operation == "remove_small_components":
             result = remove_small_components(
@@ -169,6 +175,7 @@ def apply_label_morphology_4d(
     *,
     spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
     minimum_volume_mm3: float = 100.0,
+    progress: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """仅以 4D 连通性去除标签序列内跨时间累计体积过小的区域。"""
     source = np.asarray(sequence)
@@ -177,6 +184,8 @@ def apply_label_morphology_4d(
     values = tuple(sorted({int(value) for value in label_values if int(value) > 0}))
     output = source.copy()
     for value in values:
+        if progress is not None and not progress():
+            raise RuntimeError("Morphology cancelled")
         retained = remove_small_components_4d(
             source == value,
             minimum_volume_mm3,
