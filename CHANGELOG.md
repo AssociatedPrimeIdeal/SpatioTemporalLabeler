@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.2 - 2026-08-30
+
+### Added
+
 - Added configurable frame-label copy actions. `Ctrl+C`/`Ctrl+V` copy and paste all labels by default, while a scope menu can limit the operation to the active label; `Ctrl+Shift+Left` and `Ctrl+Shift+Right` copy adjacent frames into the current frame. All changes remain one sparse, undoable replacement.
 - Added keyframe label interpolation using physical signed distance fields. Choose ordered start and end frames in the Interpolate dock, apply it to the active label or all labels, and undo the complete intermediate-frame edit as one operation.
 - Time navigation now wraps at both ends, and keyframe interpolation follows the cyclic path across the time-axis boundary by default (with an option to disable it for non-periodic segments).
