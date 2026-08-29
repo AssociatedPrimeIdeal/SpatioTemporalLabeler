@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.3 - 2026-08-30
+
+### Added
+
 - Interpolation now accepts any number of user label keyframes. Add the frames you actually edited to the Interpolate panel; every span, including the cyclic tail, is filled while keyframes remain unchanged and the complete operation stays one undo step.
 
 ### Changed
