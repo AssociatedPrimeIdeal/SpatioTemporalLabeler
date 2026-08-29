@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .frame_labels import FrameLabel
+
 
 class InterpolationPanel(QWidget):
     applyRequested = Signal()
@@ -60,6 +62,14 @@ class InterpolationPanel(QWidget):
         )
         self.keyframe_list.setMaximumHeight(110)
         layout.addWidget(self.keyframe_list)
+        self.frame_labels_label = QLabel()
+        layout.addWidget(self.frame_labels_label)
+        self.frame_labels_list = QListWidget()
+        self.frame_labels_list.setSelectionMode(
+            QListWidget.SelectionMode.NoSelection
+        )
+        self.frame_labels_list.setMaximumHeight(110)
+        layout.addWidget(self.frame_labels_list)
         keyframe_buttons = QHBoxLayout()
         self.add_keyframe_button = QPushButton()
         self.add_keyframe_button.clicked.connect(self.addCurrentRequested)
@@ -106,6 +116,40 @@ class InterpolationPanel(QWidget):
             for row in range(self.keyframe_list.count())
         )
 
+    def set_frame_labels(self, labels: tuple[FrameLabel, ...] | list[FrameLabel]) -> None:
+        """Show available timeline labels as independently selectable keyframes."""
+        existing_states = {
+            int(self.frame_labels_list.item(row).data(Qt.ItemDataRole.UserRole)):
+            self.frame_labels_list.item(row).checkState()
+            == Qt.CheckState.Checked
+            for row in range(self.frame_labels_list.count())
+        }
+        has_existing = bool(existing_states)
+        self.frame_labels_list.clear()
+        for label in sorted(labels, key=lambda value: (value.frame, value.name)):
+            item = QListWidgetItem(f"{label.name}  ({label.frame + 1})")
+            item.setData(Qt.ItemDataRole.UserRole, int(label.frame))
+            item.setData(Qt.ItemDataRole.UserRole + 1, label.phase_key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if (not has_existing) or existing_states.get(int(label.frame), True)
+                else Qt.CheckState.Unchecked
+            )
+            self.frame_labels_list.addItem(item)
+
+    def selected_frame_label_frames(self) -> tuple[int, ...]:
+        return tuple(
+            sorted(
+                {
+                    int(self.frame_labels_list.item(row).data(Qt.ItemDataRole.UserRole))
+                    for row in range(self.frame_labels_list.count())
+                    if self.frame_labels_list.item(row).checkState()
+                    == Qt.CheckState.Checked
+                }
+            )
+        )
+
     def _remove_selected_keyframe(self) -> None:
         row = self.keyframe_list.currentRow()
         if row >= 0:
@@ -150,6 +194,11 @@ class InterpolationPanel(QWidget):
             "用户标签关键帧（按时间顺序）"
             if chinese
             else "User label keyframes (time order)"
+        )
+        self.frame_labels_label.setText(
+            "时间轴标签（勾选后作为插值关键帧）"
+            if chinese
+            else "Timeline labels (checked labels become keyframes)"
         )
         self.labels_scope.setItemText(0, "选中标签" if chinese else "Selected label")
         self.labels_scope.setItemText(1, "所有标签" if chinese else "All labels")

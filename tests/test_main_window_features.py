@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui import MainWindow
+from spatiotemporal_labeler.ui.frame_labels import FrameLabel
 from spatiotemporal_labeler.ui.label_panel import THRESHOLD_MASK_ITEM
 from spatiotemporal_labeler.ui.region_grow_panel import RegionGrowPanel
 from spatiotemporal_labeler.ui.threshold_panel import ThresholdPanel
@@ -520,6 +521,62 @@ def test_multiple_user_keyframes_interpolate_all_non_keyframes_as_one_edit():
     assert len(window._undo_stack) == 1
     window.undo()
     assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_timeline_frame_labels_support_auto_manual_click_and_color_edit(monkeypatch):
+    signal = [1.0, 1.0, 1.0, 2.0, 5.0, 8.0, 5.0, 2.0, 1.0, 1.0, 1.0, 1.0]
+    image_data = np.zeros((4, 4, 1, len(signal)), dtype=np.float32)
+    for frame, value in enumerate(signal):
+        image_data[..., frame] = value
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.refresh_views()
+
+    labels = window._frame_labels[id(image)]
+    assert {label.phase_key for label in labels.values()} == {
+        "systole_start",
+        "peak",
+        "diastole_start",
+    }
+    window.cursor[3] = 2
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QInputDialog.getText",
+        lambda *_args, **_kwargs: ("Custom phase", True),
+    )
+    window._add_frame_label()
+    assert labels[2].name == "Custom phase"
+    assert labels[2].phase_key is None
+
+    window._frame_label_clicked(7)
+    assert window.cursor[3] == 7
+
+    monkeypatch.setattr(
+        "spatiotemporal_labeler.ui.main_window.QColorDialog.getColor",
+        lambda *_args, **_kwargs: QColor(12, 34, 56),
+    )
+    window._frame_label_context_requested(2, None)
+    assert labels[2].color == "#0c2238"
+    finish_window(window, mask)
+
+
+def test_timeline_frame_labels_can_be_selected_for_interpolation():
+    image_data = np.ones((5, 5, 1, 5), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[1:3, 1:3, 0, 0] = 1
+    mask_data[2:4, 2:4, 0, 4] = 1
+    window, image, mask = make_window(image_data, mask_data)
+    window._frame_labels[id(image)] = {
+        0: window._frame_labels[id(image)].get(0)
+        or FrameLabel(0, "Start", "#4f8cc9"),
+        4: FrameLabel(4, "End", "#4f8cc9"),
+    }
+    window._sync_frame_label_timeline(image)
+    panel = window.interpolation_panel
+    assert panel.selected_frame_label_frames() == (0, 4)
+    panel.frame_labels_list.item(1).setCheckState(Qt.CheckState.Unchecked)
+    assert panel.selected_frame_label_frames() == (0,)
     finish_window(window, mask)
 
 

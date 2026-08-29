@@ -6,7 +6,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added named frame markers below the time slider. Detectable cardiac phases are marked automatically; `K` adds manual markers, clicking jumps to a frame, right-clicking changes marker colors, and checked markers can drive interpolation while `Add current frame` remains available.
+
 ### Changed
+
+- Keyframe interpolation now shows a cancellable progress bar while calculating, then applies the completed result as one undoable edit.
 
 ### Fixed
 

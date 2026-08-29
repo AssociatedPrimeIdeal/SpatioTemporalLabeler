@@ -22,6 +22,17 @@ def test_interpolates_a_label_between_two_keyframes():
     assert np.count_nonzero(result[..., 0] == 1) == 9
 
 
+def test_interpolation_reports_progress_for_labels_and_frames():
+    data = np.zeros((5, 5, 1, 4), dtype=np.uint8)
+    data[1:3, 1:3, 0, 0] = 1
+    data[2:4, 2:4, 0, 3] = 1
+    calls = []
+    interpolate_label_frames(
+        data, 0, 3, [1], progress=lambda: calls.append(True) or True
+    )
+    assert len(calls) == 3  # one SDF preparation and two intermediate frames
+
+
 def test_interpolation_preserves_unselected_labels_as_barriers():
     data = np.zeros((9, 9, 1, 3), dtype=np.uint8)
     data[2:7, 2:7, 0, 0] = 1

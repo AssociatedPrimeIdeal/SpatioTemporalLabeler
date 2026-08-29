@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,6 +60,7 @@ def interpolate_label_frames(
     *,
     spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
     wrap: bool = False,
+    progress: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Interpolate multilabel keyframes with physical signed distance fields.
 
@@ -92,6 +93,8 @@ def interpolate_label_frames(
     fields: list[tuple[int, NDArray[np.float64], NDArray[np.float64]]] = []
     missing: list[int] = []
     for value in requested:
+        if progress is not None and not progress():
+            raise RuntimeError("Label interpolation cancelled")
         start_selection = source[..., start] == value
         end_selection = source[..., end] == value
         if not np.any(start_selection) and not np.any(end_selection):
@@ -121,6 +124,8 @@ def interpolate_label_frames(
     result[np.isin(result, selected_values)] = 0
     span_float = float(span)
     for offset, frame in enumerate(frames):
+        if progress is not None and not progress():
+            raise RuntimeError("Label interpolation cancelled")
         alpha = float(offset + 1) / span_float
         scores = np.stack(
             [(1.0 - alpha) * first + alpha * last for _, first, last in fields],
@@ -141,6 +146,7 @@ def interpolate_label_keyframes(
     *,
     spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
     wrap: bool = True,
+    progress: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Interpolate labels between any number of user-selected keyframes.
 
@@ -172,6 +178,7 @@ def interpolate_label_keyframes(
                 label_values,
                 spacing_xyz=spacing_xyz,
                 wrap=wrap,
+                progress=progress,
             )
             path = (
                 tuple((start + offset) % source.shape[3] for offset in range(1, span))

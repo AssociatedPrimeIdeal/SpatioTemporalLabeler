@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
+from .frame_labels import PHASE_LABEL_COLORS
+
 pg.setConfigOption("imageAxisOrder", "row-major")
 
 
@@ -793,9 +795,12 @@ class TemporalView(pg.PlotWidget):
         )
         self.phase_lines = {}
         phase_styles = {
-            "systole_start": ("#45d6c8", "Systole start"),
-            "peak": ("#ffb347", "Systolic peak"),
-            "diastole_start": ("#b58cff", "Diastole start"),
+            "systole_start": (PHASE_LABEL_COLORS["systole_start"], "Systole start"),
+            "peak": (PHASE_LABEL_COLORS["peak"], "Systolic peak"),
+            "diastole_start": (
+                PHASE_LABEL_COLORS["diastole_start"],
+                "Diastole start",
+            ),
         }
         for name, (color, tooltip) in phase_styles.items():
             line = pg.InfiniteLine(
@@ -874,6 +879,14 @@ class TemporalView(pg.PlotWidget):
         # An unlocked view fits any data rectangle to the same viewport, which
         # would visually cancel a coordinate-only time stretch.
         self.getViewBox().setAspectLocked(stretch != 1.0)
+
+    def set_phase_marker_colors(self, colors: dict[str, str] | None) -> None:
+        """Update cardiac marker colours without rebuilding the temporal slice."""
+        if colors is None:
+            colors = PHASE_LABEL_COLORS
+        for name, line in self.phase_lines.items():
+            color = colors.get(name, PHASE_LABEL_COLORS.get(name, "#53666a"))
+            line.setPen(pg.mkPen(color, width=1.1, style=Qt.PenStyle.DotLine))
 
     def clear_view(self) -> None:
         for item in (

@@ -43,6 +43,7 @@ DEFAULT_SHORTCUTS = {
     "paste_frame": "Ctrl+V",
     "copy_previous_frame": "Ctrl+Shift+Left",
     "copy_next_frame": "Ctrl+Shift+Right",
+    "frame_label": "K",
 }
 
 SHORTCUT_LABELS = {
@@ -65,6 +66,7 @@ SHORTCUT_LABELS = {
         "paste_frame": "Paste labels into current frame",
         "copy_previous_frame": "Copy previous frame to current",
         "copy_next_frame": "Copy next frame to current",
+        "frame_label": "Add a timeline frame label",
     },
     "zh_CN": {
         "brush": "画笔",
@@ -85,6 +87,7 @@ SHORTCUT_LABELS = {
         "paste_frame": "将标签粘贴到当前帧",
         "copy_previous_frame": "复制上一帧到当前帧",
         "copy_next_frame": "复制下一帧到当前帧",
+        "frame_label": "添加时间轴帧标签",
     },
 }
 

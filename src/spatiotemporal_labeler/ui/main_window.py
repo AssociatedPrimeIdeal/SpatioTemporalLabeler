@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -80,6 +80,12 @@ from spatiotemporal_labeler.tools import (
 
 from .icons import tool_icon
 from .frame_mapping_dialog import FrameMappingDialog
+from .frame_labels import (
+    FRAME_LABEL_DEFAULT_COLOR,
+    PHASE_LABEL_COLORS,
+    FrameLabel,
+    FrameLabelTimeline,
+)
 from .image_strip import ImagePreviewStrip
 from .import_dialog import ImportSelectionDialog
 from .interpolation_panel import InterpolationPanel
@@ -206,6 +212,7 @@ class MainWindow(QMainWindow):
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
         self._cardiac_phases: dict[int, CardiacPhaseFrames | None] = {}
+        self._frame_labels: dict[int, dict[int, FrameLabel]] = {}
         self._copied_frame: np.ndarray | None = None
         self._copied_frame_mask: Sequence4D | None = None
         self._copied_frame_index: int | None = None
@@ -379,30 +386,35 @@ class MainWindow(QMainWindow):
         splitter.setSizes([205, 980, 485])
         root_layout.addWidget(splitter, 1)
 
-        navigation = QHBoxLayout()
+        navigation = QVBoxLayout()
+        navigation_controls = QHBoxLayout()
         self.slider_axis_label = QLabel()
-        navigation.addWidget(self.slider_axis_label)
+        navigation_controls.addWidget(self.slider_axis_label)
         self.slider_axis = QComboBox()
         self.slider_axis.addItem("T Time", 3)
         self.slider_axis.addItem("X", 0)
         self.slider_axis.addItem("Y", 1)
         self.slider_axis.addItem("Z", 2)
         self.slider_axis.currentIndexChanged.connect(self._slider_axis_changed)
-        navigation.addWidget(self.slider_axis)
+        navigation_controls.addWidget(self.slider_axis)
+        slider_column = QVBoxLayout()
+        slider_column.setContentsMargins(0, 0, 0, 0)
+        slider_column.setSpacing(0)
+        navigation_controls.addLayout(slider_column, 1)
         self.axis_slider = QSlider(Qt.Orientation.Horizontal)
         self.axis_slider.setRange(0, 0)
         self.axis_slider.setTracking(True)
         self.axis_slider.valueChanged.connect(self._slider_value_changed)
-        navigation.addWidget(self.axis_slider, 1)
+        slider_column.addWidget(self.axis_slider)
         self.slider_value_label = QLabel("T 0 / 0")
         self.slider_value_label.setMinimumWidth(100)
-        navigation.addWidget(self.slider_value_label)
+        navigation_controls.addWidget(self.slider_value_label)
         self.all_frames_toggle = QCheckBox()
-        navigation.addWidget(self.all_frames_toggle)
+        navigation_controls.addWidget(self.all_frames_toggle)
         self.threshold_bypass_toggle = QCheckBox()
-        navigation.addWidget(self.threshold_bypass_toggle)
+        navigation_controls.addWidget(self.threshold_bypass_toggle)
         self.all_frames_bypass_toggle = QCheckBox()
-        navigation.addWidget(self.all_frames_bypass_toggle)
+        navigation_controls.addWidget(self.all_frames_bypass_toggle)
         self._edit_mode_toggles = {
             "all_frames": self.all_frames_toggle,
             "threshold_bypass": self.threshold_bypass_toggle,
@@ -412,6 +424,13 @@ class MainWindow(QMainWindow):
             toggle.toggled.connect(
                 lambda enabled, mode_key=mode: self._edit_mode_toggled(mode_key, enabled)
             )
+        navigation.addLayout(navigation_controls)
+        self.frame_label_timeline = FrameLabelTimeline()
+        self.frame_label_timeline.labelClicked.connect(self._frame_label_clicked)
+        self.frame_label_timeline.labelContextRequested.connect(
+            self._frame_label_context_requested
+        )
+        slider_column.addWidget(self.frame_label_timeline)
         root_layout.addLayout(navigation)
 
         for view in self.slice_views.values():
@@ -899,6 +918,7 @@ class MainWindow(QMainWindow):
         self.interpolation_panel.set_language(self.language)
         self.window_level_panel.set_language(self.language)
         self.image_previews.set_language(self.language)
+        self._sync_frame_label_timeline()
         self._refresh_cursor_status()
         if self.active_image is None:
             self.statusBar().showMessage(self._tr("load_start"))
@@ -1057,6 +1077,9 @@ class MainWindow(QMainWindow):
             self._set_labels_hidden_held(pressed)
             return True
         if pressed and not editing_text:
+            if self._event_matches(key_event, "frame_label"):
+                self._add_frame_label()
+                return True
             if self._event_matches(key_event, "copy_frame"):
                 self._copy_current_frame()
                 return True
@@ -1769,6 +1792,7 @@ class MainWindow(QMainWindow):
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._cardiac_phases.clear()
+        self._frame_labels.clear()
         self._copied_frame = None
         self._copied_frame_mask = None
         self._copied_frame_index = None
@@ -1888,7 +1912,138 @@ class MainWindow(QMainWindow):
                 # Flat or non-periodic signals simply have no phase guide;
                 # manual arbitrary label keyframes remain fully available.
                 self._cardiac_phases[key] = None
+            phases = self._cardiac_phases[key]
+            if phases is not None:
+                phase_labels = self._frame_labels.setdefault(key, {})
+                for frame, phase_key, color, text_key in (
+                    (
+                        phases.systole_start,
+                        "systole_start",
+                        PHASE_LABEL_COLORS["systole_start"],
+                        "frame_label_systole_start",
+                    ),
+                    (
+                        phases.peak,
+                        "peak",
+                        PHASE_LABEL_COLORS["peak"],
+                        "frame_label_peak",
+                    ),
+                    (
+                        phases.diastole_start,
+                        "diastole_start",
+                        PHASE_LABEL_COLORS["diastole_start"],
+                        "frame_label_diastole_start",
+                    ),
+                ):
+                    frame = int(frame)
+                    existing = phase_labels.get(frame)
+                    # A manually named label at the same frame takes priority
+                    # over the automatically detected phase marker.
+                    if existing is None or existing.phase_key == phase_key:
+                        phase_labels[frame] = FrameLabel(
+                            frame,
+                            self._tr(text_key),
+                            color,
+                            phase_key,
+                        )
+        self._sync_frame_label_timeline(image)
         return self._cardiac_phases[key]
+
+    def _frame_labels_for_image(self, image: Sequence4D) -> dict[int, FrameLabel]:
+        return self._frame_labels.setdefault(id(image), {})
+
+    def _sync_frame_label_timeline(self, image: Sequence4D | None = None) -> None:
+        if not hasattr(self, "frame_label_timeline"):
+            return
+        image = image if image is not None else self.active_image
+        if image is None:
+            self.frame_label_timeline.set_frame_count(1)
+            self.frame_label_timeline.set_labels(())
+            if hasattr(self, "interpolation_panel"):
+                self.interpolation_panel.set_frame_labels(())
+            return
+        labels_by_frame = self._frame_labels_for_image(image)
+        phase_name_keys = {
+            "systole_start": "frame_label_systole_start",
+            "peak": "frame_label_peak",
+            "diastole_start": "frame_label_diastole_start",
+        }
+        for label in labels_by_frame.values():
+            if label.phase_key in phase_name_keys:
+                label.name = self._tr(phase_name_keys[label.phase_key])
+        labels = tuple(labels_by_frame.values())
+        self.frame_label_timeline.set_frame_count(image.frame_count)
+        self.frame_label_timeline.set_labels(labels)
+        if hasattr(self, "interpolation_panel"):
+            self.interpolation_panel.set_frame_labels(labels)
+
+        # User-edited phase colours are reflected in the X-T guide lines too.
+        phase_colors = {
+            label.phase_key: label.color
+            for label in labels
+            if label.phase_key is not None
+        }
+        self.temporal_view.set_phase_marker_colors(phase_colors)
+
+    def _add_frame_label(self) -> None:
+        image = self.active_image
+        if image is None:
+            return
+        frame = int(np.clip(self.cursor[3], 0, image.frame_count - 1))
+        labels = self._frame_labels_for_image(image)
+        existing = labels.get(frame)
+        default_name = existing.name if existing is not None else self._tr(
+            "frame_label_default", frame=frame + 1
+        )
+        name, accepted = QInputDialog.getText(
+            self,
+            self._tr("frame_label_title"),
+            self._tr("frame_label_name"),
+            text=default_name,
+        )
+        if not accepted:
+            return
+        name = name.strip() or default_name
+        labels[frame] = FrameLabel(
+            frame,
+            name,
+            existing.color if existing is not None else FRAME_LABEL_DEFAULT_COLOR,
+            None,
+        )
+        self._sync_frame_label_timeline(image)
+        self.statusBar().showMessage(
+            self._tr("frame_label_added", frame=frame + 1, name=name), 2500
+        )
+
+    def _frame_label_clicked(self, frame: int) -> None:
+        image = self.active_image
+        if image is None:
+            return
+        target = int(np.clip(frame, 0, image.frame_count - 1))
+        if target == self.cursor[3]:
+            return
+        self.cursor[3] = target
+        self._clear_lasso_overlays()
+        self.refresh_views()
+        self._refresh_navigation_3d()
+
+    def _frame_label_context_requested(self, frame: int, _position: QPoint) -> None:
+        image = self.active_image
+        if image is None:
+            return
+        label = self._frame_labels_for_image(image).get(int(frame))
+        if label is None:
+            return
+        color = QColorDialog.getColor(
+            QColor(label.color), self, self._tr("frame_label_color")
+        )
+        if not color.isValid():
+            return
+        label.color = color.name()
+        self._sync_frame_label_timeline(image)
+        self.statusBar().showMessage(
+            self._tr("frame_label_color_changed", frame=int(frame) + 1), 2500
+        )
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
         if any(
@@ -1943,6 +2098,9 @@ class MainWindow(QMainWindow):
             self.cursor[3],
         )
         image = self.active_image
+        if image is not None:
+            self._ensure_cardiac_phases(image)
+        self._sync_frame_label_timeline(image)
         phases = self._cardiac_phases.get(id(image)) if image is not None else None
         self.interpolation_panel.set_detected_phases(
             (
@@ -3359,7 +3517,11 @@ class MainWindow(QMainWindow):
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         wrap = self.interpolation_panel.wrap_time.isChecked()
-        selected_keyframes = self.interpolation_panel.keyframe_values()
+        explicit_keyframes = self.interpolation_panel.keyframe_values()
+        timeline_keyframes = self.interpolation_panel.selected_frame_label_frames()
+        # Keep the existing Add current frame list active; checked timeline
+        # labels extend it so users can mix both workflows.
+        selected_keyframes = tuple(sorted(set((*explicit_keyframes, *timeline_keyframes))))
         if selected_keyframes:
             if len(selected_keyframes) < 2:
                 QMessageBox.information(
@@ -3396,7 +3558,50 @@ class MainWindow(QMainWindow):
             if self.interpolation_panel.labels_scope.currentData() == "all"
             else (self.active_label_value,)
         )
+
+        # The interpolation helpers report once for every selected label's
+        # signed-distance preparation and once for every intermediate frame.
+        # Keep the progress range in the same units for both the two-keyframe
+        # and multi-keyframe paths so the dialog advances while the expensive
+        # calculation is running rather than only when it has finished.
+        if selected_keyframes:
+            segments = list(zip(selected_keyframes, selected_keyframes[1:]))
+            if wrap:
+                segments.append((selected_keyframes[-1], selected_keyframes[0]))
+            progress_units = 0
+            for segment_start, segment_end in segments:
+                span = (
+                    (segment_end - segment_start) % mask.frame_count
+                    if wrap
+                    else segment_end - segment_start
+                )
+                if span >= 2:
+                    progress_units += len(label_values) + span - 1
+        else:
+            progress_units = len(label_values) + len(frames)
+        progress_units = max(1, int(progress_units))
         before = capture_frames(mask, frames)
+
+        progress = QProgressDialog(
+            self._tr("interpolation_running"),
+            self._tr("cancel"),
+            0,
+            progress_units,
+            self,
+        )
+        progress.setWindowTitle(self._tr("interpolation_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress_units_done = 0
+
+        def check_progress() -> bool:
+            nonlocal progress_units_done
+            progress_units_done += 1
+            progress.setValue(min(progress_units_done, progress_units))
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             if selected_keyframes:
@@ -3406,9 +3611,15 @@ class MainWindow(QMainWindow):
                     label_values,
                     spacing_xyz=mask.spacing_xyz,
                     wrap=wrap,
+                    progress=check_progress,
                 )
+                if progress.wasCanceled():
+                    raise RuntimeError("Label interpolation cancelled")
                 for offset, frame in enumerate(frames):
                     mask.data[..., frame] = interpolated[..., frame]
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        raise RuntimeError("Label interpolation cancelled")
             else:
                 interpolated = interpolate_label_frames(
                     mask.data,
@@ -3417,18 +3628,30 @@ class MainWindow(QMainWindow):
                     label_values,
                     spacing_xyz=mask.spacing_xyz,
                     wrap=wrap,
+                    progress=check_progress,
                 )
+                if progress.wasCanceled():
+                    raise RuntimeError("Label interpolation cancelled")
                 if wrap:
                     for offset, frame in enumerate(frames):
                         mask.data[..., frame] = interpolated[..., offset]
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            raise RuntimeError("Label interpolation cancelled")
                 else:
                     mask.data[..., start + 1 : end] = interpolated
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        raise RuntimeError("Label interpolation cancelled")
+            progress.setValue(progress_units)
         except Exception as error:
             restore_frames(mask, frames, before)
-            QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))
+            if not progress.wasCanceled():
+                QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))
             return
         finally:
             QApplication.restoreOverrideCursor()
+            progress.close()
 
         command = build_edit_command(mask, frames, before, self.cursor[3])
         if command is None:
@@ -3565,6 +3788,7 @@ class MainWindow(QMainWindow):
         image = self.active_image
         axis = int(self.slider_axis.currentData())
         maximum = image.data.shape[axis] - 1 if image is not None else 0
+        self.frame_label_timeline.setVisible(image is not None and axis == 3)
         self.axis_slider.blockSignals(True)
         self.axis_slider.setRange(0, maximum)
         self.axis_slider.setValue(self.cursor[axis] if image is not None else 0)
@@ -3796,6 +4020,7 @@ class MainWindow(QMainWindow):
         self.all_frames_toggle.setEnabled(has_mask)
         self.threshold_bypass_toggle.setEnabled(has_mask)
         self.all_frames_bypass_toggle.setEnabled(has_mask)
+        self.frame_label_timeline.setEnabled(has_image)
         self.threshold_panel.setEnabled(has_image)
         self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
         self.threshold_mask_action.setEnabled(has_image)
