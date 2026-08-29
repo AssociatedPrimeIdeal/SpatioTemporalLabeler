@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QSlider,
@@ -56,6 +57,7 @@ from spatiotemporal_labeler.model import (
     store_labels,
 )
 from spatiotemporal_labeler.tools import (
+    CardiacPhaseFrames,
     GLOBAL_METHODS,
     apply_disk,
     apply_label_morphology,
@@ -66,6 +68,8 @@ from spatiotemporal_labeler.tools import (
     fill_polygon,
     RegionGrowConfig,
     grow_region_4d,
+    detect_cardiac_phases,
+    interpolate_label_frames,
     polygon_selection,
     raster_line,
     strongest_signal_frame,
@@ -76,6 +80,7 @@ from .icons import tool_icon
 from .frame_mapping_dialog import FrameMappingDialog
 from .image_strip import ImagePreviewStrip
 from .import_dialog import ImportSelectionDialog
+from .interpolation_panel import InterpolationPanel
 from .label_panel import LabelPanel
 from .lasso_panel import LassoPanel
 from .morphology_panel import MorphologyPanel
@@ -198,6 +203,16 @@ class MainWindow(QMainWindow):
         self._lasso_3d_ignore_threshold = False
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
+        self._cardiac_phases: dict[int, CardiacPhaseFrames | None] = {}
+        self._copied_frame: np.ndarray | None = None
+        self._copied_frame_mask: Sequence4D | None = None
+        self._copied_frame_index: int | None = None
+        self._copied_frame_scope = str(
+            self.settings.value("frame_copy/scope", "all")
+        )
+        if self._copied_frame_scope not in {"all", "active"}:
+            self._copied_frame_scope = "all"
+        self._copied_frame_label_value: int | None = None
         self._build_ui()
         self.viewer_3d.set_render_settings(self.render_settings, render=False)
         self._build_actions()
@@ -459,6 +474,16 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.morphology_dock)
         self.morphology_dock.hide()
 
+        self.interpolation_dock = QDockWidget(self)
+        self.interpolation_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.interpolation_panel = InterpolationPanel()
+        self.interpolation_panel.applyRequested.connect(self._apply_interpolation)
+        self.interpolation_dock.setWidget(self.interpolation_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.interpolation_dock)
+        self.interpolation_dock.hide()
+
         self.display_dock = QDockWidget(self)
         self.display_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -471,7 +496,8 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.threshold_dock, self.grow_dock)
         self.tabifyDockWidget(self.grow_dock, self.lasso_dock)
         self.tabifyDockWidget(self.lasso_dock, self.morphology_dock)
-        self.tabifyDockWidget(self.morphology_dock, self.display_dock)
+        self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
+        self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
 
     def _build_actions(self) -> None:
         self.toolbar = QToolBar()
@@ -512,6 +538,52 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.redo_action.triggered.connect(self.redo)
         self.toolbar.addAction(self.redo_action)
+        self.toolbar.addSeparator()
+        self.copy_frame_action = QAction(tool_icon("copy", "#53666a"), "", self)
+        self.copy_frame_action.triggered.connect(self._copy_current_frame)
+        self.toolbar.addAction(self.copy_frame_action)
+        self.paste_frame_action = QAction(tool_icon("paste", "#53666a"), "", self)
+        self.paste_frame_action.triggered.connect(self._paste_copied_frame)
+        self.toolbar.addAction(self.paste_frame_action)
+        self.frame_scope_menu = QMenu(self)
+        self.frame_scope_group = QActionGroup(self)
+        self.frame_scope_group.setExclusive(True)
+        self.frame_scope_actions: dict[str, QAction] = {}
+        for scope in ("all", "active"):
+            action = QAction("", self, checkable=True)
+            action.setData(scope)
+            action.triggered.connect(
+                lambda checked, value=scope: self._set_frame_copy_scope(value)
+                if checked
+                else None
+            )
+            self.frame_scope_group.addAction(action)
+            self.frame_scope_menu.addAction(action)
+            self.frame_scope_actions[scope] = action
+        self.frame_scope_button = QToolButton()
+        self.frame_scope_button.setIcon(tool_icon("labels", "#53666a"))
+        self.frame_scope_button.setMenu(self.frame_scope_menu)
+        self.frame_scope_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self.frame_scope_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self.toolbar.addWidget(self.frame_scope_button)
+        self.copy_previous_frame_action = QAction(
+            tool_icon("copy_previous", "#53666a"), "", self
+        )
+        self.copy_previous_frame_action.triggered.connect(
+            lambda: self._copy_adjacent_frame(-1)
+        )
+        self.toolbar.addAction(self.copy_previous_frame_action)
+        self.copy_next_frame_action = QAction(
+            tool_icon("copy_next", "#53666a"), "", self
+        )
+        self.copy_next_frame_action.triggered.connect(
+            lambda: self._copy_adjacent_frame(1)
+        )
+        self.toolbar.addAction(self.copy_next_frame_action)
         self.toolbar.addSeparator()
 
         tool_group = QActionGroup(self)
@@ -559,6 +631,12 @@ class MainWindow(QMainWindow):
         self.morphology_button.setDefaultAction(self.morphology_action)
         self.morphology_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.toolbar.addWidget(self.morphology_button)
+        self.interpolation_action = self.interpolation_dock.toggleViewAction()
+        self.interpolation_action.setIcon(tool_icon("interpolate", "#3f6f9e"))
+        self.interpolation_button = QToolButton()
+        self.interpolation_button.setDefaultAction(self.interpolation_action)
+        self.interpolation_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.toolbar.addWidget(self.interpolation_button)
         self.display_action = self.display_dock.toggleViewAction()
         self.display_action.setIcon(tool_icon("window", "#53666a"))
         self.display_button = QToolButton()
@@ -594,7 +672,18 @@ class MainWindow(QMainWindow):
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.close_all_action)
         self.edit_menu = self.menuBar().addMenu("")
-        self.edit_menu.addActions([self.undo_action, self.redo_action, *self.tool_actions.values()])
+        self.edit_menu.addActions(
+            [
+                self.undo_action,
+                self.redo_action,
+                self.copy_frame_action,
+                self.paste_frame_action,
+                self.frame_scope_menu.menuAction(),
+                self.copy_previous_frame_action,
+                self.copy_next_frame_action,
+                *self.tool_actions.values(),
+            ]
+        )
         self.view_menu = self.menuBar().addMenu("")
         self.image_previews_action = QAction("", self, checkable=True)
         self.image_previews_action.setChecked(True)
@@ -605,6 +694,7 @@ class MainWindow(QMainWindow):
         self.view_menu.addAction(self.threshold_dock.toggleViewAction())
         self.view_menu.addAction(self.grow_dock.toggleViewAction())
         self.view_menu.addAction(self.morphology_action)
+        self.view_menu.addAction(self.interpolation_action)
         self.view_menu.addAction(self.display_action)
         self.language_menu = self.view_menu.addMenu("")
         language_group = QActionGroup(self)
@@ -731,6 +821,42 @@ class MainWindow(QMainWindow):
         self.close_all_action.setText(self._tr("close_all"))
         self.undo_action.setText(self._tr("undo"))
         self.redo_action.setText(self._tr("redo"))
+        self.copy_frame_action.setText(self._tr("copy_frame"))
+        copy_shortcut = self.shortcuts.get("copy_frame", "")
+        self.copy_frame_action.setToolTip(
+            f"{self._tr('copy_frame_tip')} ({copy_shortcut})"
+            if copy_shortcut
+            else self._tr("copy_frame_tip")
+        )
+        self.paste_frame_action.setText(self._tr("paste_frame"))
+        paste_shortcut = self.shortcuts.get("paste_frame", "")
+        self.paste_frame_action.setToolTip(
+            f"{self._tr('paste_frame_tip')} ({paste_shortcut})"
+            if paste_shortcut
+            else self._tr("paste_frame_tip")
+        )
+        self.frame_scope_menu.setTitle(self._tr("frame_scope_menu"))
+        self.frame_scope_actions["all"].setText(self._tr("frame_scope_all"))
+        self.frame_scope_actions["active"].setText(self._tr("frame_scope_active"))
+        self.frame_scope_actions[self._copied_frame_scope].setChecked(True)
+        scope_text = self._frame_copy_scope_text()
+        self.frame_scope_button.setToolTip(
+            self._tr("frame_scope_tip", scope=scope_text)
+        )
+        self.copy_previous_frame_action.setText(self._tr("copy_previous_frame"))
+        previous_shortcut = self.shortcuts.get("copy_previous_frame", "")
+        self.copy_previous_frame_action.setToolTip(
+            f"{self._tr('copy_previous_frame_tip')} ({previous_shortcut})"
+            if previous_shortcut
+            else self._tr("copy_previous_frame_tip")
+        )
+        self.copy_next_frame_action.setText(self._tr("copy_next_frame"))
+        next_shortcut = self.shortcuts.get("copy_next_frame", "")
+        self.copy_next_frame_action.setToolTip(
+            f"{self._tr('copy_next_frame_tip')} ({next_shortcut})"
+            if next_shortcut
+            else self._tr("copy_next_frame_tip")
+        )
         for name, action in self.tool_actions.items():
             action.setText(self._tr(name))
         self.diameter_label.setText(self._tr("diameter"))
@@ -752,6 +878,8 @@ class MainWindow(QMainWindow):
         self.lasso_dock.setWindowTitle(self._tr("lasso_dock"))
         self.morphology_dock.setWindowTitle(self._tr("morphology_dock"))
         self.morphology_action.setText(self._tr("morphology"))
+        self.interpolation_dock.setWindowTitle(self._tr("interpolation_dock"))
+        self.interpolation_action.setText(self._tr("interpolation"))
         self.display_dock.setWindowTitle(self._tr("display_dock"))
         self.display_action.setText(self._tr("display_dock"))
         self.file_menu.setTitle(self._tr("file"))
@@ -763,6 +891,7 @@ class MainWindow(QMainWindow):
         self.grow_panel.set_language(self.language)
         self.lasso_panel.set_language(self.language)
         self.morphology_panel.set_language(self.language)
+        self.interpolation_panel.set_language(self.language)
         self.window_level_panel.set_language(self.language)
         self.image_previews.set_language(self.language)
         self._refresh_cursor_status()
@@ -803,6 +932,18 @@ class MainWindow(QMainWindow):
         ):
             self.tool_actions[key].setShortcut(QKeySequence(self.shortcuts.get(key, "")))
         self.tool_actions["picker"].setShortcut(QKeySequence())
+        self.copy_frame_action.setShortcut(
+            QKeySequence(self.shortcuts.get("copy_frame", ""))
+        )
+        self.paste_frame_action.setShortcut(
+            QKeySequence(self.shortcuts.get("paste_frame", ""))
+        )
+        self.copy_previous_frame_action.setShortcut(
+            QKeySequence(self.shortcuts.get("copy_previous_frame", ""))
+        )
+        self.copy_next_frame_action.setShortcut(
+            QKeySequence(self.shortcuts.get("copy_next_frame", ""))
+        )
         self._update_temporal_stretch_tooltip()
 
     @staticmethod
@@ -862,10 +1003,22 @@ class MainWindow(QMainWindow):
         if not self.isActiveWindow():
             return super().eventFilter(watched, event)
         key_event = event
-        if not isinstance(key_event, QKeyEvent) or key_event.isAutoRepeat():
+        if not isinstance(key_event, QKeyEvent):
             return super().eventFilter(watched, event)
         editing_text = isinstance(watched, (QLineEdit, QAbstractSpinBox, QComboBox))
         pressed = event.type() == QEvent.Type.KeyPress
+        # Navigation remains active during key auto-repeat, allowing a held
+        # Left/Right key to wrap through the time sequence. Other held
+        # shortcuts stay one-shot interactions.
+        if key_event.isAutoRepeat() and not (
+            pressed
+            and not editing_text
+            and (
+                self._event_matches(key_event, "previous_time")
+                or self._event_matches(key_event, "next_time")
+            )
+        ):
+            return super().eventFilter(watched, event)
         for shortcut_key in (
             "all_frames_hold",
             "threshold_bypass",
@@ -899,6 +1052,18 @@ class MainWindow(QMainWindow):
             self._set_labels_hidden_held(pressed)
             return True
         if pressed and not editing_text:
+            if self._event_matches(key_event, "copy_frame"):
+                self._copy_current_frame()
+                return True
+            if self._event_matches(key_event, "paste_frame"):
+                self._paste_copied_frame()
+                return True
+            if self._event_matches(key_event, "copy_previous_frame"):
+                self._copy_adjacent_frame(-1)
+                return True
+            if self._event_matches(key_event, "copy_next_frame"):
+                self._copy_adjacent_frame(1)
+                return True
             if key_event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                 if self._pending_contour is not None:
                     self._confirm_contour(self._pending_contour.plane)
@@ -926,12 +1091,161 @@ class MainWindow(QMainWindow):
                 return True
         return super().eventFilter(watched, event)
 
+    def _frame_copy_scope_text(self) -> str:
+        return self._tr(
+            "frame_scope_all"
+            if self._copied_frame_scope == "all"
+            else "frame_scope_active"
+        )
+
+    def _set_frame_copy_scope(self, scope: str) -> None:
+        if scope not in {"all", "active"}:
+            return
+        self._copied_frame_scope = scope
+        self.settings.setValue("frame_copy/scope", scope)
+        if hasattr(self, "frame_scope_actions"):
+            self.frame_scope_actions[scope].setChecked(True)
+            self.frame_scope_button.setToolTip(
+                self._tr("frame_scope_tip", scope=self._frame_copy_scope_text())
+            )
+        self.statusBar().showMessage(
+            self._tr("frame_scope_changed", scope=self._frame_copy_scope_text()),
+            2500,
+        )
+
+    def _copy_current_frame(self) -> None:
+        """Keep a private frame snapshot for a later paste."""
+        mask = self.active_mask
+        if mask is None:
+            return
+        frame = int(np.clip(self.cursor[3], 0, mask.frame_count - 1))
+        self._copied_frame = mask.data[..., frame].copy()
+        self._copied_frame_mask = mask
+        self._copied_frame_index = frame
+        self._copied_frame_label_value = (
+            int(self.active_label_value) if self._copied_frame_scope == "active" else None
+        )
+        self._update_enabled_state()
+        if self._copied_frame_scope == "active" and self._copied_frame_label_value is not None:
+            message = self._tr(
+                "frame_copied_active",
+                frame=frame + 1,
+                label=self._copied_frame_label_value,
+            )
+        else:
+            message = self._tr("frame_copied", frame=frame + 1)
+        self.statusBar().showMessage(message, 3000)
+
+    def _paste_copied_frame(self) -> None:
+        """Replace the active frame with the copied snapshot as one undoable edit."""
+        mask = self.active_mask
+        copied = self._copied_frame
+        source_mask = self._copied_frame_mask
+        source_frame = self._copied_frame_index
+        if (
+            mask is None
+            or copied is None
+            or source_mask is not mask
+            or source_frame is None
+            or copied.shape != mask.shape_xyz
+        ):
+            self.statusBar().showMessage(self._tr("frame_paste_unavailable"), 3500)
+            return
+        self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
+        target_frame = int(np.clip(self.cursor[3], 0, mask.frame_count - 1))
+        self._paste_frame_snapshot(
+            mask,
+            source_frame,
+            target_frame,
+            copied,
+            self._copied_frame_scope,
+            self._copied_frame_label_value,
+        )
+
+    def _copy_adjacent_frame(self, delta: int) -> None:
+        """Copy a neighboring frame into the current frame without changing the buffer."""
+        mask = self.active_mask
+        if mask is None:
+            return
+        target_frame = int(np.clip(self.cursor[3], 0, mask.frame_count - 1))
+        source_frame = target_frame + int(delta)
+        if not 0 <= source_frame < mask.frame_count:
+            self.statusBar().showMessage(self._tr("frame_adjacent_unavailable"), 3000)
+            return
+        self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
+        snapshot = mask.data[..., source_frame].copy()
+        label_value = (
+            int(self.active_label_value) if self._copied_frame_scope == "active" else None
+        )
+        self._paste_frame_snapshot(
+            mask,
+            source_frame,
+            target_frame,
+            snapshot,
+            self._copied_frame_scope,
+            label_value,
+        )
+
+    def _paste_frame_snapshot(
+        self,
+        mask: Sequence4D,
+        source_frame: int,
+        target_frame: int,
+        snapshot: np.ndarray,
+        scope: str,
+        label_value: int | None,
+    ) -> None:
+        before = mask.data[..., target_frame : target_frame + 1].copy()
+        if scope == "active":
+            if label_value is None or int(label_value) <= 0:
+                self.statusBar().showMessage(self._tr("frame_paste_unavailable"), 3500)
+                return
+            label = int(label_value)
+            after = before[..., 0].copy()
+            after[after == label] = 0
+            source_label = snapshot == label
+            after[source_label & (after == 0)] = label
+        else:
+            after = np.asarray(snapshot).copy()
+        if np.array_equal(before[..., 0], after):
+            self.statusBar().showMessage(
+                self._tr("frame_paste_no_changes", frame=target_frame + 1), 3000
+            )
+            return
+        mask.data[..., target_frame] = after
+        command = build_edit_command(mask, (target_frame,), before, target_frame)
+        if command is None:
+            return
+        mask.dirty = True
+        self._undo_stack.append(command)
+        self._undo_stack = self._undo_stack[-30:]
+        self._redo_stack.clear()
+        self._update_mask_combo_text()
+        self._sync_label_panel()
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
+        self._update_enabled_state()
+        self.statusBar().showMessage(
+            self._tr(
+                "frame_pasted",
+                source=source_frame + 1,
+                target=target_frame + 1,
+                count=command.flat_indices.size,
+            ),
+            4500,
+        )
+
     def _step_time(self, delta: int) -> None:
         image = self.active_image
         if image is None:
             return
         previous = self.cursor[3]
-        self.cursor[3] = int(np.clip(previous + delta, 0, image.frame_count - 1))
+        frame_count = int(image.frame_count)
+        if frame_count <= 0:
+            return
+        self.cursor[3] = int((previous + int(delta)) % frame_count)
         if self.cursor[3] == previous:
             return
         self._clear_lasso_overlays()
@@ -1449,6 +1763,11 @@ class MainWindow(QMainWindow):
         self._invalidate_threshold()
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._cardiac_phases.clear()
+        self._copied_frame = None
+        self._copied_frame_mask = None
+        self._copied_frame_index = None
+        self._copied_frame_label_value = None
         self._last_clicked_slice_plane = None
         self._maximized_plane = None
         self._clear_edit_mode_holds()
@@ -1471,6 +1790,7 @@ class MainWindow(QMainWindow):
         self.slider_axis.setCurrentIndex(0)
         self._slider_axis_changed()
         self._sync_label_panel()
+        self._sync_interpolation_panel()
         self._update_enabled_state()
         self.statusBar().showMessage(self._tr("load_start"))
         return True
@@ -1485,6 +1805,7 @@ class MainWindow(QMainWindow):
         if image is None:
             self.refresh_views()
             return
+        self._ensure_cardiac_phases(image)
         if not self._cursor_initialized:
             # Pick a useful initial time once; image switching preserves location.
             self.cursor = [
@@ -1548,8 +1869,21 @@ class MainWindow(QMainWindow):
         self._slider_axis_changed()
         self._rebuild_image_previews()
         self._sync_label_panel()
+        self._sync_interpolation_panel()
         self.refresh_views(update_3d=True)
         self._update_enabled_state()
+
+    def _ensure_cardiac_phases(self, image: Sequence4D) -> CardiacPhaseFrames | None:
+        """Detect and cache cycle markers once for each loaded image sequence."""
+        key = id(image)
+        if key not in self._cardiac_phases:
+            try:
+                self._cardiac_phases[key] = detect_cardiac_phases(image.data)
+            except ValueError:
+                # Flat or non-periodic signals simply have no phase guide;
+                # manual arbitrary label keyframes remain fully available.
+                self._cardiac_phases[key] = None
+        return self._cardiac_phases[key]
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
         if any(
@@ -1592,9 +1926,28 @@ class MainWindow(QMainWindow):
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
         self._sync_label_panel()
+        self._sync_interpolation_panel()
         self._refresh_cursor_status()
         self.refresh_views(update_3d=True)
         self._update_enabled_state()
+
+    def _sync_interpolation_panel(self) -> None:
+        mask = self.active_mask
+        self.interpolation_panel.set_frame_count(
+            mask.frame_count if mask is not None else 1,
+            self.cursor[3],
+        )
+        image = self.active_image
+        phases = self._cardiac_phases.get(id(image)) if image is not None else None
+        self.interpolation_panel.set_detected_phases(
+            (
+                phases.systole_start,
+                phases.peak,
+                phases.diastole_start,
+            )
+            if phases is not None
+            else None
+        )
 
     def _label_selected(self, value: int) -> None:
         self.active_label_value = value
@@ -1784,6 +2137,7 @@ class MainWindow(QMainWindow):
             self.viewer_3d.set_mask(None)
             self.viewer_3d.set_cursor(None)
             return
+        self._ensure_cardiac_phases(image)
         self._clip_cursor()
         x, y, z, t = self.cursor
         mask = self.active_mask
@@ -1860,6 +2214,7 @@ class MainWindow(QMainWindow):
             if applied_threshold is not None
             else None
         )
+        phases = self._cardiac_phases.get(id(image))
         self.temporal_view.set_sequence_slice(
             image_temporal,
             mask_temporal,
@@ -1874,6 +2229,11 @@ class MainWindow(QMainWindow):
             applied_threshold_temporal,
             self._global_label_opacity,
             self._applied_threshold_opacity,
+            phase_markers=(
+                (phases.systole_start, phases.peak, phases.diastole_start)
+                if phases is not None
+                else None
+            ),
         )
         self._refresh_cursor_status()
         self._sync_slider()
@@ -2977,6 +3337,72 @@ class MainWindow(QMainWindow):
             self._tr("morphology_applied", count=command.flat_indices.size), 5000
         )
 
+    def _apply_interpolation(self) -> None:
+        mask = self.active_mask
+        if mask is None or not self.active_labels:
+            return
+        self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
+        start = self.interpolation_panel.start_frame.value() - 1
+        end = self.interpolation_panel.end_frame.value() - 1
+        wrap = self.interpolation_panel.wrap_time.isChecked()
+        frame_count = mask.frame_count
+        if wrap:
+            span = (end - start) % frame_count
+            frames = tuple((start + offset) % frame_count for offset in range(1, span))
+        else:
+            frames = tuple(range(start + 1, end))
+        if not frames:
+            QMessageBox.information(
+                self,
+                self._tr("interpolation_dock"),
+                self._tr("interpolation_frame_error"),
+            )
+            return
+        label_values = (
+            tuple(sorted(self.active_labels))
+            if self.interpolation_panel.labels_scope.currentData() == "all"
+            else (self.active_label_value,)
+        )
+        before = capture_frames(mask, frames)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            interpolated = interpolate_label_frames(
+                mask.data,
+                start,
+                end,
+                label_values,
+                spacing_xyz=mask.spacing_xyz,
+                wrap=wrap,
+            )
+            if wrap:
+                for offset, frame in enumerate(frames):
+                    mask.data[..., frame] = interpolated[..., offset]
+            else:
+                mask.data[..., start + 1 : end] = interpolated
+        except Exception as error:
+            restore_frames(mask, frames, before)
+            QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        command = build_edit_command(mask, frames, before, self.cursor[3])
+        if command is None:
+            self.statusBar().showMessage(self._tr("interpolation_no_changes"), 3500)
+            return
+        mask.dirty = True
+        self._undo_stack.append(command)
+        self._undo_stack = self._undo_stack[-30:]
+        self._redo_stack.clear()
+        self._update_mask_combo_text()
+        self.refresh_views()
+        self._refresh_3d(dirty_values=command.changed_label_values())
+        self._update_enabled_state()
+        self.statusBar().showMessage(
+            self._tr("interpolation_applied", count=command.flat_indices.size), 5000
+        )
+
     def undo(self) -> None:
         if not self._undo_stack:
             return
@@ -3308,6 +3734,19 @@ class MainWindow(QMainWindow):
         self.close_all_action.setEnabled(bool(self.images or self.masks))
         self.save_action.setEnabled(has_mask)
         self.save_as_action.setEnabled(has_mask)
+        self.copy_frame_action.setEnabled(has_mask)
+        self.paste_frame_action.setEnabled(
+            has_mask
+            and self._copied_frame is not None
+            and self._copied_frame_mask is self.active_mask
+        )
+        frame_count = self.active_mask.frame_count if has_mask else 0
+        current_frame = int(self.cursor[3]) if has_mask else 0
+        self.frame_scope_button.setEnabled(has_mask)
+        self.copy_previous_frame_action.setEnabled(has_mask and current_frame > 0)
+        self.copy_next_frame_action.setEnabled(
+            has_mask and current_frame + 1 < frame_count
+        )
         self.undo_action.setEnabled(bool(self._undo_stack))
         self.redo_action.setEnabled(bool(self._redo_stack))
         self.label_panel.setEnabled(has_mask)
@@ -3321,6 +3760,12 @@ class MainWindow(QMainWindow):
         self.lasso_panel.setEnabled(has_mask and has_label)
         self.morphology_panel.setEnabled(has_mask and has_label)
         self.morphology_action.setEnabled(has_mask and has_label)
+        self.interpolation_panel.setEnabled(
+            has_mask and has_label and self.active_mask.frame_count >= 3
+        )
+        self.interpolation_action.setEnabled(
+            has_mask and has_label and self.active_mask.frame_count >= 3
+        )
         self.window_level_panel.setEnabled(has_image)
         self.display_action.setEnabled(has_image)
         for action in self.tool_actions.values():

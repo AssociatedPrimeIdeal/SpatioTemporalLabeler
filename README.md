@@ -18,6 +18,10 @@ SpatioTemporal Labeler is a cross-platform desktop editor for manual and semi-au
 - Linked X-Y/X-Z/Y-Z spatial and X-T/Y-T/Z-T temporal views with a shared X/Y/Z/T cursor
 - Peak-signal frame selection, time navigation, and display-only temporal-axis stretch
 - Current-frame or all-frame label editing with physical brush/eraser footprints and one-gesture undo
+- Copy and paste complete frames or only the active label within a label sequence with configurable shortcuts and one-step undo
+- Interpolate selected labels between two keyframes with physical signed distance fields while preserving other labels as barriers
+- Interpolate across the time-axis end by default, treating periodic sequences as a cyclic path between the chosen keyframes; the option can be disabled for non-periodic segments
+- Automatically estimate and display systole start, systolic peak, and diastole-start phase guides while keeping label keyframes user-defined
 - Adjacent-frame temporal propagation using physical displacement, intensity matching, and label/threshold barriers
 - Synchronized 2D overlays and independently colored 3D label surfaces while navigating time
 - Separate threshold-mask constraints with all-frame editing and threshold-bypass modes
@@ -78,10 +82,13 @@ spatiotemporal-labeler
 | Hold `I` / `H` | Pick labels / hide 2D label overlays |
 | Press/release `CapsLock`, `Q`, or `W` | Toggle all-frame threshold-constrained, current-frame threshold-bypass, or all-frame threshold-bypass editing; hold during a stroke for a temporary mode |
 | `[` / `]` | Decrease/increase brush or eraser diameter |
-| `Left` / `Right` | Previous/next time frame |
+| `Left` / `Right` | Previous/next time frame (wraps from the last frame to the first and back) |
 | `Up` / `Down` | Next/previous orthogonal spatial slice |
 | `V` | Cycle X-T/Y-T/Z-T display-only time-axis stretch (1x/2x/4x) |
 | `R` | Reset the hovered preview or the main 2D views |
+| `Ctrl+C` / `Ctrl+V` | Copy the current frame's labels / paste them into the current frame |
+| `Ctrl+Shift+Left` / `Ctrl+Shift+Right` | Copy the previous/next frame into the current frame |
+| `View > Interpolate` | Open the keyframe label interpolation panel |
 | `Enter` / `Esc` | Apply a pending contour / cancel a contour or lasso |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
 | `Ctrl+W` | Close all loaded files |

@@ -791,6 +791,22 @@ class TemporalView(pg.PlotWidget):
                 AXIS_COLORS["T"], width=1.3, style=Qt.PenStyle.DashLine
             ),
         )
+        self.phase_lines = {}
+        phase_styles = {
+            "systole_start": ("#45d6c8", "Systole start"),
+            "peak": ("#ffb347", "Systolic peak"),
+            "diastole_start": ("#b58cff", "Diastole start"),
+        }
+        for name, (color, tooltip) in phase_styles.items():
+            line = pg.InfiniteLine(
+                angle=0,
+                movable=False,
+                pen=pg.mkPen(color, width=1.1, style=Qt.PenStyle.DotLine),
+            )
+            line.setToolTip(tooltip)
+            line.setZValue(29)
+            line.hide()
+            self.phase_lines[name] = line
         self.spatial_line = pg.InfiniteLine(
             angle=90,
             movable=False,
@@ -807,6 +823,8 @@ class TemporalView(pg.PlotWidget):
         self.addItem(self.contour_item)
         self.addItem(self.time_line)
         self.addItem(self.spatial_line)
+        for line in self.phase_lines.values():
+            self.addItem(line)
         self.lasso_overlay = LassoOverlay(self)
         self.footprint = FootprintOverlay(self)
         self.setMenuEnabled(False)
@@ -870,6 +888,8 @@ class TemporalView(pg.PlotWidget):
         self.footprint.show_at(0, 0, False)
         self.time_line.hide()
         self.spatial_line.hide()
+        for line in self.phase_lines.values():
+            line.hide()
         self._data_rect = None
         self._geometry_signature = None
         self.getPlotItem().setTitle(self.mode, color="#dce8e9", size="10pt")
@@ -896,6 +916,7 @@ class TemporalView(pg.PlotWidget):
         applied_threshold: np.ndarray | None = None,
         global_opacity: float = 1.0,
         threshold_opacity: float = 1.0,
+        phase_markers: tuple[int, int, int] | None = None,
     ) -> None:
         self.mode = mode
         self.spacing = spacing
@@ -935,6 +956,15 @@ class TemporalView(pg.PlotWidget):
         else:
             self.set_mask_overlay(mask, labels, rect, global_opacity)
         self.time_line.setValue(time_index * self.time_stretch)
+        marker_names = ("systole_start", "peak", "diastole_start")
+        for name, line in self.phase_lines.items():
+            line.hide()
+        if phase_markers is not None:
+            for name, marker in zip(marker_names, phase_markers):
+                if 0 <= int(marker) < height:
+                    line = self.phase_lines[name]
+                    line.setValue(int(marker) * self.time_stretch)
+                    line.show()
         if cursor is not None:
             self.spatial_line.show()
             self.time_line.show()

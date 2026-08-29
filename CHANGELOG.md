@@ -6,6 +6,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added configurable frame-label copy actions. `Ctrl+C`/`Ctrl+V` copy and paste all labels by default, while a scope menu can limit the operation to the active label; `Ctrl+Shift+Left` and `Ctrl+Shift+Right` copy adjacent frames into the current frame. All changes remain one sparse, undoable replacement.
+- Added keyframe label interpolation using physical signed distance fields. Choose ordered start and end frames in the Interpolate dock, apply it to the active label or all labels, and undo the complete intermediate-frame edit as one operation.
+- Time navigation now wraps at both ends, and keyframe interpolation follows the cyclic path across the time-axis boundary by default (with an option to disable it for non-periodic segments).
+- Added automatic cardiac phase hints for loaded 4D image sequences. The temporal view marks estimated systole start, systolic peak, and diastole start; these are guidance only, so arbitrary user-selected label keyframes remain supported.
+
 ### Changed
 
 ### Fixed

@@ -282,6 +282,222 @@ def test_drawing_mode_shortcuts_toggle_or_apply_only_to_a_held_stroke():
     finish_window(window, mask)
 
 
+def test_copy_paste_frame_labels_is_undoable_and_uses_configurable_shortcuts():
+    image_data = np.ones((3, 3, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[0, 0, 0, 0] = 1
+    mask_data[1, 1, 0, 0] = 2
+    mask_data[2, 2, 0, 1] = 1
+    window, _image, mask = make_window(image_data, mask_data)
+    window._set_frame_copy_scope("all")
+    window.shortcuts.update({"copy_frame": "Ctrl+C", "paste_frame": "Ctrl+V"})
+    window._apply_shortcuts()
+    window.isActiveWindow = lambda: True
+    window.cursor[3] = 0
+
+    copy_event = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier
+    )
+    assert window.eventFilter(window, copy_event)
+    assert window.copy_frame_action.shortcut().toString() == "Ctrl+C"
+
+    window.cursor[3] = 1
+    paste_event = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+    )
+    assert window.eventFilter(window, paste_event)
+    assert np.array_equal(mask.data[..., 1], mask.data[..., 0])
+    assert len(window._undo_stack) == 1
+
+    window.undo()
+    assert mask.data[2, 2, 0, 1] == 1
+    window.redo()
+    assert np.array_equal(mask.data[..., 1], mask.data[..., 0])
+    finish_window(window, mask)
+
+
+def test_active_label_frame_copy_preserves_other_labels_and_conflicts():
+    image_data = np.ones((3, 3, 1, 2), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[0, 0, 0, 0] = 1
+    mask_data[0, 1, 0, 0] = 1
+    mask_data[1, 1, 0, 0] = 2
+    mask_data[2, 2, 0, 1] = 1
+    mask_data[0, 0, 0, 1] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    window.active_label_value = 1
+    window._set_frame_copy_scope("active")
+    window.cursor[3] = 0
+    window._copy_current_frame()
+    window.cursor[3] = 1
+    window._paste_copied_frame()
+
+    assert mask.data[2, 2, 0, 1] == 0
+    assert mask.data[0, 1, 0, 1] == 1
+    assert mask.data[0, 0, 0, 1] == 2
+    assert mask.data[1, 1, 0, 1] == 0
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert mask.data[2, 2, 0, 1] == 1
+    assert mask.data[0, 0, 0, 1] == 2
+    finish_window(window, mask)
+
+
+def test_adjacent_frame_shortcuts_copy_into_current_frame():
+    image_data = np.ones((2, 2, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[0, 0, 0, 0] = 1
+    mask_data[1, 1, 0, 2] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    window._set_frame_copy_scope("all")
+    window.shortcuts.update(
+        {
+            "copy_previous_frame": "Ctrl+Shift+Left",
+            "copy_next_frame": "Ctrl+Shift+Right",
+        }
+    )
+    window._apply_shortcuts()
+    window.isActiveWindow = lambda: True
+    window.cursor[3] = 1
+    previous_event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Left,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert window.eventFilter(window, previous_event)
+    assert np.array_equal(mask.data[..., 1], mask.data[..., 0])
+
+    next_event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert window.eventFilter(window, next_event)
+    assert np.array_equal(mask.data[..., 1], mask.data[..., 2])
+    assert len(window._undo_stack) == 2
+    finish_window(window, mask)
+
+
+def test_pasting_identical_frame_does_not_create_history_entry():
+    image_data = np.ones((2, 2, 1, 2), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[0, 0, 0, :] = 1
+    window, _image, mask = make_window(image_data, mask_data)
+    window._set_frame_copy_scope("all")
+    window._copy_current_frame()
+    window.cursor[3] = 1
+    window._paste_copied_frame()
+    assert not window._undo_stack
+    finish_window(window, mask)
+
+
+def test_keyframe_interpolation_updates_only_intermediate_frames_and_is_undoable():
+    image_data = np.ones((9, 9, 3, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[1:4, 3:6, 1, 0] = 1
+    mask_data[3:6, 3:6, 1, 2] = 1
+    mask_data[4, 4, 1, 1] = 2
+    window, _image, mask = make_window(image_data, mask_data)
+    window.active_label_value = 1
+    original = mask.data.copy()
+    window.interpolation_panel.set_frame_count(mask.frame_count, 0)
+    window.interpolation_panel.start_frame.setValue(1)
+    window.interpolation_panel.end_frame.setValue(3)
+    window.interpolation_panel.labels_scope.setCurrentIndex(
+        window.interpolation_panel.labels_scope.findData("selected")
+    )
+
+    window._apply_interpolation()
+
+    assert np.array_equal(mask.data[..., 0], original[..., 0])
+    assert np.array_equal(mask.data[..., 2], original[..., 2])
+    assert mask.data[4, 4, 1, 1] == 2
+    assert np.count_nonzero(mask.data[..., 1] == 1) > 0
+    assert not np.array_equal(mask.data[..., 1], original[..., 1])
+    assert len(window._undo_stack) == 1
+
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    window.redo()
+    assert mask.data[4, 4, 1, 1] == 2
+    assert np.count_nonzero(mask.data[..., 1] == 1) > 0
+    finish_window(window, mask)
+
+
+def test_time_navigation_wraps_and_handles_held_right_on_the_bottom_slider():
+    image_data = np.ones((2, 2, 1, 3), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    window.isActiveWindow = lambda: True
+    window.cursor[3] = 2
+
+    window._step_time(1)
+    assert window.cursor[3] == 0
+    window._step_time(-1)
+    assert window.cursor[3] == 2
+
+    window.cursor[3] = 2
+    window.slider_axis.setCurrentIndex(0)
+    repeated_right = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.NoModifier,
+        "",
+        True,
+    )
+    assert window.eventFilter(window.axis_slider, repeated_right)
+    assert window.cursor[3] == 0
+    assert window.axis_slider.value() == 0
+    finish_window(window, mask)
+
+
+def test_cyclic_interpolation_panel_writes_wrapped_intermediate_frames():
+    image_data = np.ones((7, 7, 1, 5), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    mask_data[1:3, 2:5, 0, 3] = 1
+    mask_data[1:3, 2:5, 0, 1] = 1
+    window, _image, mask = make_window(image_data, mask_data)
+    window.active_label_value = 1
+    original = mask.data.copy()
+    panel = window.interpolation_panel
+    panel.set_frame_count(mask.frame_count, 0)
+    assert panel.wrap_time.isChecked()
+    panel.start_frame.setValue(4)
+    panel.end_frame.setValue(2)
+    panel.wrap_time.setChecked(True)
+
+    window._apply_interpolation()
+
+    assert np.array_equal(mask.data[..., 3], original[..., 3])
+    assert np.array_equal(mask.data[..., 1], original[..., 1])
+    assert np.count_nonzero(mask.data[..., 4] == 1) > 0
+    assert np.count_nonzero(mask.data[..., 0] == 1) > 0
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
+def test_cardiac_phase_markers_are_cached_on_load_and_shown_in_temporal_view():
+    signal = [1.0, 1.0, 1.0, 2.0, 5.0, 8.0, 5.0, 2.0, 1.0, 1.0, 1.0, 1.0]
+    image_data = np.zeros((4, 4, 1, len(signal)), dtype=np.float32)
+    for frame, value in enumerate(signal):
+        image_data[..., frame] = value
+    window, image, mask = make_window(
+        image_data, np.zeros(image_data.shape, dtype=np.uint8)
+    )
+    window.refresh_views()
+
+    phases = window._cardiac_phases[id(image)]
+    assert phases is not None
+    assert phases.peak == 5
+    assert window.interpolation_panel.phase_hint.text().startswith(
+        ("检测相位", "Detected phases")
+    )
+    assert all(line.isVisible() for line in window.temporal_view.phase_lines.values())
+    finish_window(window, mask)
+
+
 def test_lasso_respects_the_selected_threshold_bypass_mode():
     image_data = np.ones((5, 5, 1, 1), dtype=np.float32)
     mask_data = np.ones(image_data.shape, dtype=np.uint8)

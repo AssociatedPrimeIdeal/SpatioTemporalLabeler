@@ -8,7 +8,8 @@ from .editing import (
     raster_line,
     transform_selected_labels,
 )
-from .intensity import strongest_signal_frame
+from .intensity import CardiacPhaseFrames, detect_cardiac_phases, strongest_signal_frame
+from .interpolation import interpolate_label_frames
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
     apply_label_morphology,
@@ -48,6 +49,9 @@ __all__ = [
     "polygon_selection",
     "raster_line",
     "strongest_signal_frame",
+    "CardiacPhaseFrames",
+    "detect_cardiac_phases",
     "transform_selected_labels",
     "grow_region_4d",
+    "interpolate_label_frames",
 ]

@@ -86,6 +86,12 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawEllipse(QRectF(11.5, 4.5, 9, 9))
             painter.drawLine(QPointF(7, 19), QPointF(17, 19))
             painter.drawLine(QPointF(12, 16), QPointF(12, 22))
+        elif name == "interpolate":
+            painter.drawRoundedRect(QRectF(3.5, 4.5, 6, 6), 1, 1)
+            painter.drawRoundedRect(QRectF(14.5, 13.5, 6, 6), 1, 1)
+            painter.drawEllipse(QRectF(10.5, 9.5, 3, 3))
+            painter.drawLine(QPointF(9.5, 9.5), QPointF(11, 10.5))
+            painter.drawLine(QPointF(13, 11.5), QPointF(14.5, 13.5))
         elif name == "image":
             painter.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 1.5, 1.5)
             painter.drawEllipse(QRectF(7, 8, 2.5, 2.5))
@@ -117,6 +123,23 @@ def tool_icon(name: str, color: str) -> QIcon:
                 points = [QPointF(14, 6), QPointF(19, 11), QPointF(14, 16)]
                 painter.drawPolyline(QPolygonF(points))
                 painter.drawArc(QRectF(4, 7, 14, 11), 30 * 16, 220 * 16)
+        elif name == "copy":
+            painter.drawRoundedRect(QRectF(8, 5, 12, 14), 1.5, 1.5)
+            painter.drawRoundedRect(QRectF(4, 9, 12, 12), 1.5, 1.5)
+        elif name == "paste":
+            painter.drawRoundedRect(QRectF(5, 6, 14, 15), 1.5, 1.5)
+            painter.drawRoundedRect(QRectF(9, 3, 6, 5), 1.5, 1.5)
+            painter.drawLine(QPointF(8, 13), QPointF(16, 13))
+            painter.drawLine(QPointF(8, 17), QPointF(16, 17))
+        elif name in {"copy_previous", "copy_next"}:
+            painter.drawRoundedRect(QRectF(8, 5, 12, 14), 1.5, 1.5)
+            painter.drawRoundedRect(QRectF(4, 9, 12, 12), 1.5, 1.5)
+            if name == "copy_previous":
+                painter.drawLine(QPointF(5, 5), QPointF(2, 8))
+                painter.drawLine(QPointF(2, 8), QPointF(5, 11))
+            else:
+                painter.drawLine(QPointF(19, 5), QPointF(22, 8))
+                painter.drawLine(QPointF(22, 8), QPointF(19, 11))
     finally:
         painter.end()
     return QIcon(pixmap)

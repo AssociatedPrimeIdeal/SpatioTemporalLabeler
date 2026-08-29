@@ -39,6 +39,10 @@ DEFAULT_SHORTCUTS = {
     "temporal_stretch": "V",
     "previous_time": "Left",
     "next_time": "Right",
+    "copy_frame": "Ctrl+C",
+    "paste_frame": "Ctrl+V",
+    "copy_previous_frame": "Ctrl+Shift+Left",
+    "copy_next_frame": "Ctrl+Shift+Right",
 }
 
 SHORTCUT_LABELS = {
@@ -57,6 +61,10 @@ SHORTCUT_LABELS = {
         "temporal_stretch": "Cycle temporal time stretch",
         "previous_time": "Previous time frame",
         "next_time": "Next time frame",
+        "copy_frame": "Copy current frame labels",
+        "paste_frame": "Paste labels into current frame",
+        "copy_previous_frame": "Copy previous frame to current",
+        "copy_next_frame": "Copy next frame to current",
     },
     "zh_CN": {
         "brush": "画笔",
@@ -73,6 +81,10 @@ SHORTCUT_LABELS = {
         "temporal_stretch": "切换时空视图时间轴拉伸",
         "previous_time": "上一时间帧",
         "next_time": "下一时间帧",
+        "copy_frame": "复制当前帧标签",
+        "paste_frame": "将标签粘贴到当前帧",
+        "copy_previous_frame": "复制上一帧到当前帧",
+        "copy_next_frame": "复制下一帧到当前帧",
     },
 }
 
