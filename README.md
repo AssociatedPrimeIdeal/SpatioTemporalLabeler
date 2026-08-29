@@ -22,6 +22,7 @@ SpatioTemporal Labeler is a cross-platform desktop editor for manual and semi-au
 - Interpolate selected labels between two keyframes with physical signed distance fields while preserving other labels as barriers
 - Interpolate across the time-axis end by default, treating periodic sequences as a cyclic path between the chosen keyframes; the option can be disabled for non-periodic segments
 - Automatically estimate and display systole start, systolic peak, and diastole-start phase guides while keeping label keyframes user-defined
+- Add any number of user-edited label keyframes and interpolate every gap across the full periodic sequence in one undoable operation
 - Adjacent-frame temporal propagation using physical displacement, intensity matching, and label/threshold barriers
 - Synchronized 2D overlays and independently colored 3D label surfaces while navigating time
 - Separate threshold-mask constraints with all-frame editing and threshold-bypass modes

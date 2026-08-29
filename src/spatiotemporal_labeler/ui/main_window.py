@@ -70,6 +70,8 @@ from spatiotemporal_labeler.tools import (
     grow_region_4d,
     detect_cardiac_phases,
     interpolate_label_frames,
+    interpolate_label_keyframes,
+    keyframe_intermediate_frames,
     polygon_selection,
     raster_line,
     strongest_signal_frame,
@@ -480,6 +482,9 @@ class MainWindow(QMainWindow):
         )
         self.interpolation_panel = InterpolationPanel()
         self.interpolation_panel.applyRequested.connect(self._apply_interpolation)
+        self.interpolation_panel.addCurrentRequested.connect(
+            self._add_current_interpolation_keyframe
+        )
         self.interpolation_dock.setWidget(self.interpolation_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.interpolation_dock)
         self.interpolation_dock.hide()
@@ -3337,21 +3342,48 @@ class MainWindow(QMainWindow):
             self._tr("morphology_applied", count=command.flat_indices.size), 5000
         )
 
+    def _add_current_interpolation_keyframe(self) -> None:
+        mask = self.active_mask
+        if mask is None:
+            return
+        frame = int(np.clip(self.cursor[3], 0, mask.frame_count - 1))
+        self.interpolation_panel.add_keyframe(frame)
+        self.statusBar().showMessage(
+            self._tr("interpolation_keyframe_added", frame=frame + 1), 2500
+        )
+
     def _apply_interpolation(self) -> None:
         mask = self.active_mask
         if mask is None or not self.active_labels:
             return
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
-        start = self.interpolation_panel.start_frame.value() - 1
-        end = self.interpolation_panel.end_frame.value() - 1
         wrap = self.interpolation_panel.wrap_time.isChecked()
-        frame_count = mask.frame_count
-        if wrap:
-            span = (end - start) % frame_count
-            frames = tuple((start + offset) % frame_count for offset in range(1, span))
+        selected_keyframes = self.interpolation_panel.keyframe_values()
+        if selected_keyframes:
+            if len(selected_keyframes) < 2:
+                QMessageBox.information(
+                    self,
+                    self._tr("interpolation_dock"),
+                    self._tr("interpolation_keyframe_error"),
+                )
+                return
+            try:
+                frames = keyframe_intermediate_frames(
+                    selected_keyframes, mask.frame_count, wrap=wrap
+                )
+            except ValueError as error:
+                QMessageBox.information(self, self._tr("interpolation_dock"), str(error))
+                return
         else:
-            frames = tuple(range(start + 1, end))
+            start = self.interpolation_panel.start_frame.value() - 1
+            end = self.interpolation_panel.end_frame.value() - 1
+            frame_count = mask.frame_count
+            if wrap:
+                span = (end - start) % frame_count
+                frames = tuple((start + offset) % frame_count for offset in range(1, span))
+            else:
+                frames = tuple(range(start + 1, end))
         if not frames:
             QMessageBox.information(
                 self,
@@ -3367,19 +3399,30 @@ class MainWindow(QMainWindow):
         before = capture_frames(mask, frames)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            interpolated = interpolate_label_frames(
-                mask.data,
-                start,
-                end,
-                label_values,
-                spacing_xyz=mask.spacing_xyz,
-                wrap=wrap,
-            )
-            if wrap:
+            if selected_keyframes:
+                interpolated = interpolate_label_keyframes(
+                    mask.data,
+                    selected_keyframes,
+                    label_values,
+                    spacing_xyz=mask.spacing_xyz,
+                    wrap=wrap,
+                )
                 for offset, frame in enumerate(frames):
-                    mask.data[..., frame] = interpolated[..., offset]
+                    mask.data[..., frame] = interpolated[..., frame]
             else:
-                mask.data[..., start + 1 : end] = interpolated
+                interpolated = interpolate_label_frames(
+                    mask.data,
+                    start,
+                    end,
+                    label_values,
+                    spacing_xyz=mask.spacing_xyz,
+                    wrap=wrap,
+                )
+                if wrap:
+                    for offset, frame in enumerate(frames):
+                        mask.data[..., frame] = interpolated[..., offset]
+                else:
+                    mask.data[..., start + 1 : end] = interpolated
         except Exception as error:
             restore_frames(mask, frames, before)
             QMessageBox.critical(self, self._tr("interpolation_failed"), str(error))

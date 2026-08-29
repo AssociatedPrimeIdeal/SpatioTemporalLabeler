@@ -498,6 +498,31 @@ def test_cardiac_phase_markers_are_cached_on_load_and_shown_in_temporal_view():
     finish_window(window, mask)
 
 
+def test_multiple_user_keyframes_interpolate_all_non_keyframes_as_one_edit():
+    image_data = np.ones((7, 7, 1, 6), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    for frame in (0, 2, 4):
+        mask_data[3:5, 3:6, 0, frame] = 1
+    window, _image, mask = make_window(image_data, mask_data)
+    original = mask.data.copy()
+    panel = window.interpolation_panel
+    panel.set_frame_count(mask.frame_count, 0)
+    for frame in (0, 2, 4):
+        panel.add_keyframe(frame)
+
+    window._apply_interpolation()
+
+    assert panel.keyframe_values() == (0, 2, 4)
+    for frame in (0, 2, 4):
+        assert np.array_equal(mask.data[..., frame], original[..., frame])
+    for frame in (1, 3, 5):
+        assert np.count_nonzero(mask.data[..., frame] == 1) > 0
+    assert len(window._undo_stack) == 1
+    window.undo()
+    assert np.array_equal(mask.data, original)
+    finish_window(window, mask)
+
+
 def test_lasso_respects_the_selected_threshold_bypass_mode():
     image_data = np.ones((5, 5, 1, 1), dtype=np.float32)
     mask_data = np.ones(image_data.shape, dtype=np.uint8)

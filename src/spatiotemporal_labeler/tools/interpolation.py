@@ -7,6 +7,32 @@ from numpy.typing import NDArray
 from scipy import ndimage
 
 
+def keyframe_intermediate_frames(
+    keyframes: Iterable[int], frame_count: int, *, wrap: bool = True
+) -> tuple[int, ...]:
+    """Return all non-keyframe indices covered by consecutive keyframe spans."""
+    count = int(frame_count)
+    if count < 1:
+        raise ValueError("The label sequence must contain at least one frame")
+    frames = tuple(int(value) for value in keyframes)
+    if len(frames) < 2:
+        raise ValueError("At least two label keyframes are required")
+    if len(set(frames)) != len(frames):
+        raise ValueError("Label keyframes must be unique")
+    if any(value < 0 or value >= count for value in frames):
+        raise ValueError("Label keyframes must be inside the sequence")
+    if frames != tuple(sorted(frames)):
+        raise ValueError("Label keyframes must be in ascending time order")
+
+    paths: list[tuple[int, ...]] = []
+    for start, end in zip(frames, frames[1:]):
+        paths.append(tuple(range(start + 1, end)))
+    if wrap:
+        span = (frames[0] - frames[-1]) % count
+        paths.append(tuple((frames[-1] + offset) % count for offset in range(1, span)))
+    return tuple(frame for path in paths for frame in path)
+
+
 def _signed_distance(
     selection: NDArray,
     spacing_xyz: tuple[float, float, float],
@@ -105,4 +131,53 @@ def interpolate_label_frames(
         available = result[..., offset] == 0
         for index, value in enumerate(selected_values):
             result[..., offset][available & (winning_index == index) & (winning_score >= 0)] = value
+    return result
+
+
+def interpolate_label_keyframes(
+    data: NDArray,
+    keyframes: Iterable[int],
+    label_values: Iterable[int],
+    *,
+    spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    wrap: bool = True,
+) -> np.ndarray:
+    """Interpolate labels between any number of user-selected keyframes.
+
+    Keyframes are kept unchanged. Consecutive spans are interpolated in
+    ascending time order; with ``wrap=True`` the final keyframe connects back
+    to the first so every non-keyframe in a periodic sequence is covered.
+    """
+    source = np.asarray(data)
+    if source.ndim != 4:
+        raise ValueError(f"Label interpolation expects 3D+t data, got {source.shape}")
+    frames = tuple(int(value) for value in keyframes)
+    intermediate = keyframe_intermediate_frames(frames, source.shape[3], wrap=wrap)
+    if not intermediate:
+        raise ValueError("At least one frame is required between the keyframes")
+
+    result = source.copy()
+    segments = list(zip(frames, frames[1:]))
+    if wrap:
+        segments.append((frames[-1], frames[0]))
+    for start, end in segments:
+        if wrap or start < end:
+            span = (end - start) % source.shape[3] if wrap else end - start
+            if span < 2:
+                continue
+            segment = interpolate_label_frames(
+                source,
+                start,
+                end,
+                label_values,
+                spacing_xyz=spacing_xyz,
+                wrap=wrap,
+            )
+            path = (
+                tuple((start + offset) % source.shape[3] for offset in range(1, span))
+                if wrap
+                else tuple(range(start + 1, end))
+            )
+            for offset, frame in enumerate(path):
+                result[..., frame] = segment[..., offset]
     return result

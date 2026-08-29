@@ -9,7 +9,11 @@ from .editing import (
     transform_selected_labels,
 )
 from .intensity import CardiacPhaseFrames, detect_cardiac_phases, strongest_signal_frame
-from .interpolation import interpolate_label_frames
+from .interpolation import (
+    interpolate_label_frames,
+    interpolate_label_keyframes,
+    keyframe_intermediate_frames,
+)
 from .morphology import (
     MORPHOLOGY_OPERATIONS,
     apply_label_morphology,
@@ -54,4 +58,6 @@ __all__ = [
     "transform_selected_labels",
     "grow_region_4d",
     "interpolate_label_frames",
+    "interpolate_label_keyframes",
+    "keyframe_intermediate_frames",
 ]
