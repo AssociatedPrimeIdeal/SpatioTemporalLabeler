@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 from PySide6.QtCore import QPoint, QPointF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPolygonF
+from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 
@@ -36,9 +37,10 @@ class FrameLabelTimeline(QWidget):
         super().__init__(parent)
         self._frame_count = 1
         self._labels: tuple[FrameLabel, ...] = ()
+        self._slider: QSlider | None = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMinimumHeight(30)
-        self.setMaximumHeight(42)
+        self.setMinimumHeight(18)
+        self.setMaximumHeight(24)
         self.setMouseTracking(True)
 
     @property
@@ -50,6 +52,11 @@ class FrameLabelTimeline(QWidget):
 
     def set_frame_count(self, count: int) -> None:
         self._frame_count = max(1, int(count))
+        self.update()
+
+    def set_slider(self, slider: QSlider | None) -> None:
+        """Align markers with the slider's groove and handle travel range."""
+        self._slider = slider
         self.update()
 
     def set_labels(self, labels: Iterable[FrameLabel]) -> None:
@@ -73,6 +80,24 @@ class FrameLabelTimeline(QWidget):
     def _frame_x(self, frame: int) -> float:
         if self._frame_count <= 1:
             return max(0.0, (self.width() - 1) / 2.0)
+        if self._slider is not None:
+            option = QStyleOptionSlider()
+            self._slider.initStyleOption(option)
+            groove = self._slider.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                option,
+                QStyle.SubControl.SC_SliderGroove,
+                self._slider,
+            )
+            handle = self._slider.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                option,
+                QStyle.SubControl.SC_SliderHandle,
+                self._slider,
+            )
+            travel = max(0, groove.width() - handle.width())
+            start = groove.left() + handle.width() / 2.0
+            return start + float(frame) * travel / float(self._frame_count - 1)
         return float(frame) * max(0.0, self.width() - 1) / float(self._frame_count - 1)
 
     def _label_at(self, x: float, y: float) -> FrameLabel | None:
@@ -87,32 +112,21 @@ class FrameLabelTimeline(QWidget):
     def paintEvent(self, _event: object) -> None:  # noqa: N802 - Qt API
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#9eafb2"))
-        painter.drawLine(0, 8, max(0, self.width() - 1), 8)
         for label in self._labels:
             x = self._frame_x(label.frame)
             color = QColor(label.color)
             if not color.isValid():
                 color = QColor("#53666a")
-            painter.setPen(color)
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
-            painter.drawLine(round(x), 11, round(x), 2)
             painter.drawPolygon(
                 QPolygonF(
                     [
                         QPointF(x, 1),
-                        QPointF(x - 4.5, 7),
-                        QPointF(x + 4.5, 7),
+                        QPointF(x - 6.0, 14),
+                        QPointF(x + 6.0, 14),
                     ]
                 )
-            )
-            painter.drawText(
-                int(round(x - 75)),
-                13,
-                150,
-                max(1, self.height() - 13),
-                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                label.name,
             )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API

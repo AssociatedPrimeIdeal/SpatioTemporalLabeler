@@ -10,6 +10,9 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Fixed
 
+- Frame-marker edits now support undo/redo, and the right-click menu can delete a marker as well as change its colour. Timeline markers are rendered as handle-aligned triangles without labels or stems; the initial cardiac frame now uses the detected systolic peak when available.
+- Cardiac phase detection now uses the same whole-volume global signal as automatic frame selection, keeping the systolic peak marker and initial frame on one consistent metric.
+
 ## 0.4.4 - 2026-08-30
 
 ### Added

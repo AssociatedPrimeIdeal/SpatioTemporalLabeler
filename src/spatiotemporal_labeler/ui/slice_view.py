@@ -929,7 +929,7 @@ class TemporalView(pg.PlotWidget):
         applied_threshold: np.ndarray | None = None,
         global_opacity: float = 1.0,
         threshold_opacity: float = 1.0,
-        phase_markers: tuple[int, int, int] | None = None,
+        phase_markers: tuple[int | None, int | None, int | None] | None = None,
     ) -> None:
         self.mode = mode
         self.spacing = spacing
@@ -974,7 +974,7 @@ class TemporalView(pg.PlotWidget):
             line.hide()
         if phase_markers is not None:
             for name, marker in zip(marker_names, phase_markers):
-                if 0 <= int(marker) < height:
+                if marker is not None and 0 <= int(marker) < height:
                     line = self.phase_lines[name]
                     line.setValue(int(marker) * self.time_stretch)
                     line.show()

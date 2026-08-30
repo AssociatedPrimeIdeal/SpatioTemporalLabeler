@@ -123,6 +123,26 @@ class PendingContour:
     ignore_threshold: bool = False
 
 
+@dataclass
+class FrameLabelEditCommand:
+    """Undoable metadata change for one timeline frame marker."""
+
+    window: "MainWindow"
+    image: Sequence4D
+    frame: int
+    before: FrameLabel | None
+    after: FrameLabel | None
+
+    def _apply(self, value: FrameLabel | None) -> None:
+        self.window._set_frame_label_value(self.image, self.frame, value)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -426,6 +446,7 @@ class MainWindow(QMainWindow):
             )
         navigation.addLayout(navigation_controls)
         self.frame_label_timeline = FrameLabelTimeline()
+        self.frame_label_timeline.set_slider(self.axis_slider)
         self.frame_label_timeline.labelClicked.connect(self._frame_label_clicked)
         self.frame_label_timeline.labelContextRequested.connect(
             self._frame_label_context_requested
@@ -1837,9 +1858,14 @@ class MainWindow(QMainWindow):
         self._ensure_cardiac_phases(image)
         if not self._cursor_initialized:
             # Pick a useful initial time once; image switching preserves location.
+            initial_time = (
+                phases.peak
+                if (phases := self._cardiac_phases.get(id(image))) is not None
+                else strongest_signal_frame(image.data)
+            )
             self.cursor = [
                 *(max(0, size // 2) for size in image.data.shape[:3]),
-                strongest_signal_frame(image.data),
+                initial_time,
             ]
             self._cursor_initialized = True
         else:
@@ -1952,6 +1978,46 @@ class MainWindow(QMainWindow):
     def _frame_labels_for_image(self, image: Sequence4D) -> dict[int, FrameLabel]:
         return self._frame_labels.setdefault(id(image), {})
 
+    @staticmethod
+    def _copy_frame_label(label: FrameLabel | None) -> FrameLabel | None:
+        if label is None:
+            return None
+        return FrameLabel(label.frame, label.name, label.color, label.phase_key)
+
+    def _set_frame_label_value(
+        self, image: Sequence4D, frame: int, label: FrameLabel | None
+    ) -> None:
+        labels = self._frame_labels_for_image(image)
+        if label is None:
+            labels.pop(int(frame), None)
+        else:
+            copied = self._copy_frame_label(label)
+            if copied is not None:
+                labels[int(frame)] = copied
+        if image is self.active_image:
+            self._sync_frame_label_timeline(image)
+            self.refresh_views()
+
+    def _record_frame_label_change(
+        self,
+        image: Sequence4D,
+        frame: int,
+        before: FrameLabel | None,
+        after: FrameLabel | None,
+    ) -> None:
+        self._undo_stack.append(
+            FrameLabelEditCommand(
+                self,
+                image,
+                int(frame),
+                self._copy_frame_label(before),
+                self._copy_frame_label(after),
+            )
+        )
+        self._undo_stack = self._undo_stack[-30:]
+        self._redo_stack.clear()
+        self._update_enabled_state()
+
     def _sync_frame_label_timeline(self, image: Sequence4D | None = None) -> None:
         if not hasattr(self, "frame_label_timeline"):
             return
@@ -2010,6 +2076,7 @@ class MainWindow(QMainWindow):
             existing.color if existing is not None else FRAME_LABEL_DEFAULT_COLOR,
             None,
         )
+        self._record_frame_label_change(image, frame, existing, labels[frame])
         self._sync_frame_label_timeline(image)
         self.statusBar().showMessage(
             self._tr("frame_label_added", frame=frame + 1, name=name), 2500
@@ -2027,7 +2094,7 @@ class MainWindow(QMainWindow):
         self.refresh_views()
         self._refresh_navigation_3d()
 
-    def _frame_label_context_requested(self, frame: int, _position: QPoint) -> None:
+    def _change_frame_label_color(self, frame: int) -> None:
         image = self.active_image
         if image is None:
             return
@@ -2039,11 +2106,45 @@ class MainWindow(QMainWindow):
         )
         if not color.isValid():
             return
+        before = self._copy_frame_label(label)
         label.color = color.name()
+        after = self._copy_frame_label(label)
+        self._record_frame_label_change(image, int(frame), before, after)
         self._sync_frame_label_timeline(image)
         self.statusBar().showMessage(
             self._tr("frame_label_color_changed", frame=int(frame) + 1), 2500
         )
+
+    def _delete_frame_label(self, frame: int) -> None:
+        image = self.active_image
+        if image is None:
+            return
+        labels = self._frame_labels_for_image(image)
+        label = labels.get(int(frame))
+        if label is None:
+            return
+        self._record_frame_label_change(image, int(frame), label, None)
+        self._set_frame_label_value(image, int(frame), None)
+        self.statusBar().showMessage(
+            self._tr("frame_label_deleted", frame=int(frame) + 1), 2500
+        )
+
+    def _frame_label_context_requested(self, frame: int, position: QPoint) -> None:
+        image = self.active_image
+        if image is None or int(frame) not in self._frame_labels_for_image(image):
+            return
+        if position is None:
+            # Keep this callable without a GUI event for scripted clients/tests.
+            self._change_frame_label_color(int(frame))
+            return
+        menu = QMenu(self)
+        change_color = menu.addAction(self._tr("frame_label_change_color"))
+        delete = menu.addAction(self._tr("frame_label_delete"))
+        chosen = menu.exec(position)
+        if chosen == change_color:
+            self._change_frame_label_color(int(frame))
+        elif chosen == delete:
+            self._delete_frame_label(int(frame))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
         if any(
@@ -2378,6 +2479,20 @@ class MainWindow(QMainWindow):
             else None
         )
         phases = self._cardiac_phases.get(id(image))
+        phase_markers = None
+        if phases is not None:
+            labels_for_image = self._frame_labels_for_image(image)
+            phase_markers = tuple(
+                next(
+                    (
+                        label.frame
+                        for label in labels_for_image.values()
+                        if label.phase_key == phase_key
+                    ),
+                    None,
+                )
+                for phase_key in ("systole_start", "peak", "diastole_start")
+            )
         self.temporal_view.set_sequence_slice(
             image_temporal,
             mask_temporal,
@@ -2392,11 +2507,7 @@ class MainWindow(QMainWindow):
             applied_threshold_temporal,
             self._global_label_opacity,
             self._applied_threshold_opacity,
-            phase_markers=(
-                (phases.systole_start, phases.peak, phases.diastole_start)
-                if phases is not None
-                else None
-            ),
+            phase_markers=phase_markers,
         )
         self._refresh_cursor_status()
         self._sync_slider()
@@ -3677,8 +3788,11 @@ class MainWindow(QMainWindow):
         command = self._undo_stack.pop()
         command.undo()
         self._redo_stack.append(command)
-        self._show_command_mask(command)
-        self._refresh_3d(dirty_values=command.changed_label_values())
+        if isinstance(command, EditCommand):
+            self._show_command_mask(command)
+            self._refresh_3d(dirty_values=command.changed_label_values())
+        else:
+            self._show_frame_label_command(command)
 
     def redo(self) -> None:
         if not self._redo_stack:
@@ -3688,8 +3802,27 @@ class MainWindow(QMainWindow):
         command = self._redo_stack.pop()
         command.redo()
         self._undo_stack.append(command)
-        self._show_command_mask(command)
-        self._refresh_3d(dirty_values=command.changed_label_values())
+        if isinstance(command, EditCommand):
+            self._show_command_mask(command)
+            self._refresh_3d(dirty_values=command.changed_label_values())
+        else:
+            self._show_frame_label_command(command)
+
+    def _show_frame_label_command(self, command: FrameLabelEditCommand) -> None:
+        """Reveal a frame-marker edit even when it targets another image."""
+        image_index = next(
+            (index for index, image in enumerate(self.images) if image is command.image),
+            None,
+        )
+        if image_index is not None and self.active_image is not command.image:
+            self.image_combo.setCurrentIndex(image_index)
+        if self.active_image is command.image:
+            self.cursor[3] = int(np.clip(command.frame, 0, command.image.frame_count - 1))
+        if self.active_image is command.image:
+            self._sync_frame_label_timeline(command.image)
+            self.refresh_views()
+            self._refresh_navigation_3d()
+        self._update_enabled_state()
 
     def _show_command_mask(self, command: EditCommand) -> None:
         if self.active_image is None or not self.active_image.compatible_with(command.mask):

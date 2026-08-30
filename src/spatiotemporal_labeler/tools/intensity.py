@@ -22,28 +22,24 @@ class CardiacPhaseFrames:
 
 
 def _temporal_signal(data: NDArray[np.number]) -> np.ndarray:
-    """Build a robust scalar signal from each frame's finite magnitude values."""
+    """Build the global finite-magnitude signal for each time frame.
+
+    This intentionally matches :func:`strongest_signal_frame`: every finite
+    voxel contributes its absolute magnitude, so phase detection and initial
+    frame selection use the same whole-volume measurement.
+    """
     sequence = np.asarray(data)
     if sequence.ndim != 4 or sequence.shape[3] < 1:
         raise ValueError("Temporal signal extraction requires nonempty 4D data")
     signal = np.zeros(sequence.shape[3], dtype=np.float64)
     for frame in range(sequence.shape[3]):
         values = np.asarray(sequence[..., frame]).ravel()
-        if values.size > 500_000:
-            values = values[:: int(np.ceil(values.size / 500_000))]
         finite = np.isfinite(values)
         if not np.any(finite):
             continue
-        magnitudes = np.abs(values[finite].astype(np.complex128 if np.iscomplexobj(values) else np.float64))
-        # Background can dominate a whole-frame sum. The mean of the brightest
-        # 10% is still stable for PCMRA/magnitude data and less sensitive to
-        # static background than summing every voxel.
-        if magnitudes.size >= 10:
-            cutoff = float(np.quantile(magnitudes, 0.90))
-            selected = magnitudes[magnitudes >= cutoff]
-            signal[frame] = float(selected.mean())
-        else:
-            signal[frame] = float(magnitudes.mean())
+        dtype = np.complex128 if np.iscomplexobj(values) else np.float64
+        finite_values = np.asarray(values[finite], dtype=dtype)
+        signal[frame] = np.abs(finite_values).sum(dtype=np.float64)
     return signal
 
 
@@ -75,10 +71,14 @@ def detect_cardiac_phases(
     fraction = float(systolic_fraction)
     if not np.isfinite(fraction) or not 0.0 < fraction < 1.0:
         raise ValueError("Systolic fraction must be between 0 and 1")
-    signal = _circular_smooth(_temporal_signal(data))
+    raw_signal = _temporal_signal(data)
+    signal = _circular_smooth(raw_signal)
     if signal.size < 3:
         raise ValueError("At least three frames are required for phase detection")
-    peak = int(np.argmax(signal))
+    # The peak is the maximum of the global signal itself, exactly matching
+    # the frame chosen by ``strongest_signal_frame``. Smoothing is retained
+    # only for the hysteresis threshold used to find systolic boundaries.
+    peak = int(np.argmax(raw_signal))
     baseline = float(np.percentile(signal, 25.0))
     peak_value = float(signal[peak])
     amplitude = peak_value - baseline
@@ -115,17 +115,4 @@ def detect_cardiac_phases(
 
 def strongest_signal_frame(data: NDArray[np.number]) -> int:
     """Return the earliest frame with the largest finite absolute-signal sum."""
-    sequence = np.asarray(data)
-    if sequence.ndim != 4 or sequence.shape[3] < 1:
-        raise ValueError("Signal-frame selection requires nonempty 4D image data")
-
-    strengths = np.zeros(sequence.shape[3], dtype=np.float64)
-    for frame in range(sequence.shape[3]):
-        values = sequence[..., frame]
-        finite = np.isfinite(values)
-        if not np.any(finite):
-            continue
-        dtype = np.complex128 if np.iscomplexobj(values) else np.float64
-        finite_values = np.asarray(values[finite], dtype=dtype)
-        strengths[frame] = np.abs(finite_values).sum(dtype=np.float64)
-    return int(np.argmax(strengths))
+    return int(np.argmax(_temporal_signal(data)))
