@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.6 - 2026-08-31
+
+### Added
+
 - K-created timeline flags are global across loaded image sequences; the interpolation dock now offers one combined frame list with cardiac phase markers and an Add current frame action.
 
 ### Changed
