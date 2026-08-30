@@ -6,7 +6,11 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- K-created timeline flags are global across loaded image sequences; the interpolation dock now offers one combined frame list with cardiac phase markers and an Add current frame action.
+
 ### Changed
+
+- Interpolation frame selection is presented as a single checked list; detected systole start, systolic peak, diastole start, and manual flags are selected by default.
 
 ### Fixed
 

@@ -132,9 +132,12 @@ class FrameLabelEditCommand:
     frame: int
     before: FrameLabel | None
     after: FrameLabel | None
+    global_scope: bool = False
 
     def _apply(self, value: FrameLabel | None) -> None:
-        self.window._set_frame_label_value(self.image, self.frame, value)
+        self.window._set_frame_label_value(
+            self.image, self.frame, value, global_scope=self.global_scope
+        )
 
     def undo(self) -> None:
         self._apply(self.before)
@@ -233,6 +236,10 @@ class MainWindow(QMainWindow):
         self._redo_stack: list[EditCommand] = []
         self._cardiac_phases: dict[int, CardiacPhaseFrames | None] = {}
         self._frame_labels: dict[int, dict[int, FrameLabel]] = {}
+        # Manual timeline flags are application-global: pressing K once keeps
+        # the marker visible when switching between loaded image sequences.
+        # Automatically detected cardiac phase labels remain per-image.
+        self._global_frame_labels: dict[int, FrameLabel] = {}
         self._copied_frame: np.ndarray | None = None
         self._copied_frame_mask: Sequence4D | None = None
         self._copied_frame_index: int | None = None
@@ -1814,6 +1821,7 @@ class MainWindow(QMainWindow):
         self._redo_stack.clear()
         self._cardiac_phases.clear()
         self._frame_labels.clear()
+        self._global_frame_labels.clear()
         self._copied_frame = None
         self._copied_frame_mask = None
         self._copied_frame_index = None
@@ -1976,7 +1984,16 @@ class MainWindow(QMainWindow):
         return self._cardiac_phases[key]
 
     def _frame_labels_for_image(self, image: Sequence4D) -> dict[int, FrameLabel]:
-        return self._frame_labels.setdefault(id(image), {})
+        labels = self._frame_labels.setdefault(id(image), {})
+        # Materialize global manual flags for newly loaded images as a
+        # compatibility mirror, without replacing image-specific phase data.
+        for frame, global_label in self._global_frame_labels.items():
+            existing = labels.get(int(frame))
+            if existing is None or existing.phase_key is None:
+                copied = self._copy_frame_label(global_label)
+                if copied is not None:
+                    labels[int(frame)] = copied
+        return labels
 
     @staticmethod
     def _copy_frame_label(label: FrameLabel | None) -> FrameLabel | None:
@@ -1984,8 +2001,49 @@ class MainWindow(QMainWindow):
             return None
         return FrameLabel(label.frame, label.name, label.color, label.phase_key)
 
+    def _restore_phase_marker(self, image: Sequence4D, frame: int) -> None:
+        """Restore an auto phase hidden by a global manual marker."""
+        phases = self._cardiac_phases.get(id(image))
+        if phases is None:
+            return
+        phase_labels = self._frame_labels_for_image(image)
+        phase_specs = (
+            (
+                phases.systole_start,
+                "systole_start",
+                PHASE_LABEL_COLORS["systole_start"],
+                "frame_label_systole_start",
+            ),
+            (
+                phases.peak,
+                "peak",
+                PHASE_LABEL_COLORS["peak"],
+                "frame_label_peak",
+            ),
+            (
+                phases.diastole_start,
+                "diastole_start",
+                PHASE_LABEL_COLORS["diastole_start"],
+                "frame_label_diastole_start",
+            ),
+        )
+        for phase_frame, phase_key, color, text_key in phase_specs:
+            if int(phase_frame) != int(frame):
+                continue
+            existing = phase_labels.get(int(frame))
+            if existing is None:
+                phase_labels[int(frame)] = FrameLabel(
+                    int(frame), self._tr(text_key), color, phase_key
+                )
+            return
+
     def _set_frame_label_value(
-        self, image: Sequence4D, frame: int, label: FrameLabel | None
+        self,
+        image: Sequence4D,
+        frame: int,
+        label: FrameLabel | None,
+        *,
+        global_scope: bool = False,
     ) -> None:
         labels = self._frame_labels_for_image(image)
         if label is None:
@@ -1994,6 +2052,29 @@ class MainWindow(QMainWindow):
             copied = self._copy_frame_label(label)
             if copied is not None:
                 labels[int(frame)] = copied
+        if global_scope:
+            if label is None or label.phase_key is not None:
+                self._global_frame_labels.pop(int(frame), None)
+            else:
+                copied = self._copy_frame_label(label)
+                if copied is not None:
+                    self._global_frame_labels[int(frame)] = copied
+            # Keep lightweight per-image mirrors for existing integrations.
+            # Never overwrite an image-specific cardiac phase marker.
+            for candidate in self.images:
+                candidate_labels = self._frame_labels_for_image(candidate)
+                existing = candidate_labels.get(int(frame))
+                if existing is not None and existing.phase_key is not None:
+                    continue
+                if label is None or label.phase_key is not None:
+                    candidate_labels.pop(int(frame), None)
+                else:
+                    copied = self._copy_frame_label(label)
+                    if copied is not None:
+                        candidate_labels[int(frame)] = copied
+            if label is None or label.phase_key is not None:
+                for candidate in self.images:
+                    self._restore_phase_marker(candidate, int(frame))
         if image is self.active_image:
             self._sync_frame_label_timeline(image)
             self.refresh_views()
@@ -2004,6 +2085,8 @@ class MainWindow(QMainWindow):
         frame: int,
         before: FrameLabel | None,
         after: FrameLabel | None,
+        *,
+        global_scope: bool = False,
     ) -> None:
         self._undo_stack.append(
             FrameLabelEditCommand(
@@ -2012,6 +2095,7 @@ class MainWindow(QMainWindow):
                 int(frame),
                 self._copy_frame_label(before),
                 self._copy_frame_label(after),
+                bool(global_scope),
             )
         )
         self._undo_stack = self._undo_stack[-30:]
@@ -2028,7 +2112,10 @@ class MainWindow(QMainWindow):
             if hasattr(self, "interpolation_panel"):
                 self.interpolation_panel.set_frame_labels(())
             return
-        labels_by_frame = self._frame_labels_for_image(image)
+        labels_by_frame = dict(self._frame_labels_for_image(image))
+        # Manual K-markers are global and take precedence over an automatic
+        # phase marker at the same frame for every loaded image.
+        labels_by_frame.update(self._global_frame_labels)
         phase_name_keys = {
             "systole_start": "frame_label_systole_start",
             "peak": "frame_label_peak",
@@ -2037,7 +2124,11 @@ class MainWindow(QMainWindow):
         for label in labels_by_frame.values():
             if label.phase_key in phase_name_keys:
                 label.name = self._tr(phase_name_keys[label.phase_key])
-        labels = tuple(labels_by_frame.values())
+        labels = tuple(
+            label
+            for label in labels_by_frame.values()
+            if 0 <= int(label.frame) < image.frame_count
+        )
         self.frame_label_timeline.set_frame_count(image.frame_count)
         self.frame_label_timeline.set_labels(labels)
         if hasattr(self, "interpolation_panel"):
@@ -2057,7 +2148,7 @@ class MainWindow(QMainWindow):
             return
         frame = int(np.clip(self.cursor[3], 0, image.frame_count - 1))
         labels = self._frame_labels_for_image(image)
-        existing = labels.get(frame)
+        existing = self._global_frame_labels.get(frame) or labels.get(frame)
         default_name = existing.name if existing is not None else self._tr(
             "frame_label_default", frame=frame + 1
         )
@@ -2070,13 +2161,21 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         name = name.strip() or default_name
-        labels[frame] = FrameLabel(
+        new_label = FrameLabel(
             frame,
             name,
             existing.color if existing is not None else FRAME_LABEL_DEFAULT_COLOR,
             None,
         )
-        self._record_frame_label_change(image, frame, existing, labels[frame])
+        labels[frame] = new_label
+        self._record_frame_label_change(
+            image,
+            frame,
+            existing,
+            new_label,
+            global_scope=True,
+        )
+        self._set_frame_label_value(image, frame, new_label, global_scope=True)
         self._sync_frame_label_timeline(image)
         self.statusBar().showMessage(
             self._tr("frame_label_added", frame=frame + 1, name=name), 2500
@@ -2098,7 +2197,9 @@ class MainWindow(QMainWindow):
         image = self.active_image
         if image is None:
             return
-        label = self._frame_labels_for_image(image).get(int(frame))
+        label = self._global_frame_labels.get(int(frame)) or self._frame_labels_for_image(
+            image
+        ).get(int(frame))
         if label is None:
             return
         color = QColorDialog.getColor(
@@ -2109,7 +2210,20 @@ class MainWindow(QMainWindow):
         before = self._copy_frame_label(label)
         label.color = color.name()
         after = self._copy_frame_label(label)
-        self._record_frame_label_change(image, int(frame), before, after)
+        self._record_frame_label_change(
+            image,
+            int(frame),
+            before,
+            after,
+            global_scope=int(frame) in self._global_frame_labels,
+        )
+        if int(frame) in self._global_frame_labels:
+            copied_after = self._copy_frame_label(after)
+            if copied_after is not None:
+                self._global_frame_labels[int(frame)] = copied_after
+            # Keep the active image's compatibility mirror in sync for
+            # callers that inspect its per-image label map.
+            self._set_frame_label_value(image, int(frame), after, global_scope=True)
         self._sync_frame_label_timeline(image)
         self.statusBar().showMessage(
             self._tr("frame_label_color_changed", frame=int(frame) + 1), 2500
@@ -2120,18 +2234,26 @@ class MainWindow(QMainWindow):
         if image is None:
             return
         labels = self._frame_labels_for_image(image)
-        label = labels.get(int(frame))
+        label = self._global_frame_labels.get(int(frame)) or labels.get(int(frame))
         if label is None:
             return
-        self._record_frame_label_change(image, int(frame), label, None)
-        self._set_frame_label_value(image, int(frame), None)
+        global_scope = int(frame) in self._global_frame_labels
+        self._record_frame_label_change(
+            image, int(frame), label, None, global_scope=global_scope
+        )
+        self._set_frame_label_value(
+            image, int(frame), None, global_scope=global_scope
+        )
         self.statusBar().showMessage(
             self._tr("frame_label_deleted", frame=int(frame) + 1), 2500
         )
 
     def _frame_label_context_requested(self, frame: int, position: QPoint) -> None:
         image = self.active_image
-        if image is None or int(frame) not in self._frame_labels_for_image(image):
+        if image is None or (
+            int(frame) not in self._frame_labels_for_image(image)
+            and int(frame) not in self._global_frame_labels
+        ):
             return
         if position is None:
             # Keep this callable without a GUI event for scripted clients/tests.
