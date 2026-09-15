@@ -10,6 +10,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Fixed
 
+## 0.4.7 - 2026-09-15
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Spatial slice navigation now wraps between the first and last slice, and held Up/Down keys continue stepping with auto-repeat just like time navigation.
 
 ## 0.4.6 - 2026-08-31
