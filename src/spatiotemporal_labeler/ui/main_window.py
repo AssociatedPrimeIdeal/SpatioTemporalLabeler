@@ -1060,15 +1060,20 @@ class MainWindow(QMainWindow):
             return super().eventFilter(watched, event)
         editing_text = isinstance(watched, (QLineEdit, QAbstractSpinBox, QComboBox))
         pressed = event.type() == QEvent.Type.KeyPress
-        # Navigation remains active during key auto-repeat, allowing a held
-        # Left/Right key to wrap through the time sequence. Other held
-        # shortcuts stay one-shot interactions.
+        # Navigation remains active during key auto-repeat, allowing held
+        # Left/Right keys to wrap through time and held Up/Down keys to wrap
+        # through the preferred spatial slice. Other held shortcuts stay
+        # one-shot interactions.
         if key_event.isAutoRepeat() and not (
             pressed
             and not editing_text
             and (
                 self._event_matches(key_event, "previous_time")
                 or self._event_matches(key_event, "next_time")
+                or (
+                    key_event.modifiers() == Qt.KeyboardModifier.NoModifier
+                    and key_event.key() in {Qt.Key.Key_Up, Qt.Key.Key_Down}
+                )
             )
         ):
             return super().eventFilter(watched, event)
@@ -4001,8 +4006,11 @@ class MainWindow(QMainWindow):
         if image is None:
             return
         fixed_axis = PLANE_AXES[plane][2]
+        slice_count = int(image.data.shape[fixed_axis])
+        if slice_count <= 0:
+            return
         self.cursor[fixed_axis] = int(
-            np.clip(self.cursor[fixed_axis] + delta, 0, image.data.shape[fixed_axis] - 1)
+            (self.cursor[fixed_axis] + int(delta)) % slice_count
         )
         self._clear_lasso_overlays()
         self.refresh_views()

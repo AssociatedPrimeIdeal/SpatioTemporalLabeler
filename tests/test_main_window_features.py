@@ -452,6 +452,40 @@ def test_time_navigation_wraps_and_handles_held_right_on_the_bottom_slider():
     finish_window(window, mask)
 
 
+def test_slice_navigation_wraps_and_handles_held_up_down():
+    image_data = np.ones((2, 3, 2, 1), dtype=np.float32)
+    mask_data = np.zeros(image_data.shape, dtype=np.uint8)
+    window, _image, mask = make_window(image_data, mask_data)
+    window.isActiveWindow = lambda: True
+    window.refresh_views = lambda: None
+    window.cursor[:3] = [0, 0, 0]
+    window.slice_views["X-Y"].viewActivated.emit("X-Y")
+
+    repeated_down = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Down,
+        Qt.KeyboardModifier.NoModifier,
+        "",
+        True,
+    )
+    assert window.eventFilter(window, repeated_down)
+    assert window.cursor[2] == 1
+
+    repeated_down_again = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Down,
+        Qt.KeyboardModifier.NoModifier,
+        "",
+        True,
+    )
+    assert window.eventFilter(window, repeated_down_again)
+    assert window.cursor[2] == 0
+
+    window._step_slice("X-Y", -1)
+    assert window.cursor[2] == 1
+    finish_window(window, mask)
+
+
 def test_cyclic_interpolation_panel_writes_wrapped_intermediate_frames():
     image_data = np.ones((7, 7, 1, 5), dtype=np.float32)
     mask_data = np.zeros(image_data.shape, dtype=np.uint8)
