@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         self._stroke_frames: tuple[int, ...] = ()
         self._stroke_context: tuple[int, ...] = ()
         self._stroke_bounds: tuple[slice, slice, slice] | None = None
+        self._stroke_snapshot_bounds: tuple[slice, slice, slice] | None = None
         self._stroke_tool = "brush"
         self._stroke_label_value = 1
         self._grow_stroke_seeds: set[tuple[int, int, int, int]] = set()
@@ -1676,7 +1677,6 @@ class MainWindow(QMainWindow):
         self.images.append(sequence)
         self.image_combo.addItem(sequence.display_name)
         self.image_combo.setCurrentIndex(len(self.images) - 1)
-        self._rebuild_image_previews()
         self.statusBar().showMessage(
             self._tr(
                 "loaded_image",
@@ -1812,6 +1812,7 @@ class MainWindow(QMainWindow):
         self._last_active_image = None
         self._mask_labels.clear()
         self._image_levels.clear()
+        self._grow_footprint_offset_cache.clear()
 
         self.cursor = [0, 0, 0, 0]
         self.active_label_value = 1
@@ -2802,7 +2803,24 @@ class MainWindow(QMainWindow):
             self._stroke_frames = self._spatial_edit_frames(
                 mask, effective_tool, self._stroke_frame
             )
-        self._stroke_before = capture_frames(mask, self._stroke_frames)
+        self._stroke_snapshot_bounds = None
+        if effective_tool in {"brush", "eraser"}:
+            bounds = [slice(0, length) for length in mask.shape_xyz]
+            if plane in PLANE_AXES:
+                fixed_axis = PLANE_AXES[plane][2]
+                fixed = self._stroke_context[0]
+                bounds[fixed_axis] = slice(fixed, fixed + 1)
+            else:
+                spatial_axis = TEMPORAL_AXES[plane]
+                for axis, fixed in zip(
+                    (axis for axis in range(3) if axis != spatial_axis),
+                    self._stroke_context,
+                ):
+                    bounds[axis] = slice(fixed, fixed + 1)
+            self._stroke_snapshot_bounds = tuple(bounds)
+        self._stroke_before = capture_frames(
+            mask, self._stroke_frames, self._stroke_snapshot_bounds
+        )
         self._contour = [(h, v)]
         if self._stroke_tool == "contour":
             self._view_for_plane(plane).set_contour(self._contour)
@@ -2987,11 +3005,11 @@ class MainWindow(QMainWindow):
                 selections = (
                     [selection] * len(self._lasso_3d_frames)
                     if not threshold_enabled
-                    else [
+                    else (
                         selection
                         & np.asarray(self._active_threshold_frame(frame), dtype=bool)
                         for frame in self._lasso_3d_frames
-                    ]
+                    )
                 )
                 changed = sum(
                     transform_selected_labels(mask.data[..., frame], frame_selection, target, source)
@@ -3416,6 +3434,7 @@ class MainWindow(QMainWindow):
             before,
             self._stroke_frame,
             spatial_bounds=self._stroke_bounds,
+            snapshot_bounds=self._stroke_snapshot_bounds,
         )
         if command is not None:
             mask.dirty = True
@@ -3434,6 +3453,7 @@ class MainWindow(QMainWindow):
         self._stroke_frames = ()
         self._stroke_context = ()
         self._stroke_bounds = None
+        self._stroke_snapshot_bounds = None
         self._stroke_tool = self.tool
         self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = False

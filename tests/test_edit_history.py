@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import (
@@ -99,3 +100,38 @@ def test_edit_command_reports_changed_positive_labels():
 
     assert command is not None
     assert command.changed_label_values() == {2, 7}
+
+
+@pytest.mark.parametrize("frames", [(0, 1, 2), (0, 2)])
+def test_region_snapshots_restore_and_build_global_undo_indices(frames):
+    mask = make_mask()
+    bounds = (slice(1, 5), slice(2, 6), slice(3, 4))
+    before = capture_frames(mask, frames, bounds)
+    assert before.shape == (4, 4, 1, len(frames))
+    mask.data[3, 4, 3, 2] = 9
+    mask.data[0, 0, 0, 2] = 7
+    command = build_edit_command(
+        mask, frames, before, 2,
+        spatial_bounds=(slice(3, 4), slice(4, 5), slice(3, 4)),
+        snapshot_bounds=bounds,
+    )
+    assert command.flat_indices.tolist() == [np.ravel_multi_index((3, 4, 3, 2), mask.data.shape)]
+    command.undo()
+    assert mask.data[3, 4, 3, 2] == 0
+    assert mask.data[0, 0, 0, 2] == 7
+    command.redo()
+    restore_frames(mask, frames, before, bounds)
+    assert mask.data[3, 4, 3, 2] == 0
+    assert mask.data[0, 0, 0, 2] == 7
+
+
+def test_region_snapshot_rejects_comparison_outside_its_bounds():
+    mask = make_mask()
+    bounds = (slice(1, 4), slice(2, 5), slice(3, 4))
+    before = capture_frames(mask, (0,), bounds)
+    with pytest.raises(ValueError, match="inside the captured snapshot"):
+        build_edit_command(
+            mask, (0,), before, 0,
+            spatial_bounds=(slice(0, 4), slice(2, 5), slice(3, 4)),
+            snapshot_bounds=bounds,
+        )

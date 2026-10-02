@@ -22,6 +22,7 @@ from spatiotemporal_labeler.io import Sequence4D
 from spatiotemporal_labeler.model import LabelDefinition
 
 from .slice_view import AXIS_COLORS, label_overlay
+from .image_item import DisplayImageItem
 
 
 PREVIEW_PLANES = ("X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T")
@@ -31,7 +32,7 @@ AXIS_NAMES = ("X", "Y", "Z")
 MAPPING_CACHE_LIMIT = 24
 
 
-class ThumbnailImageItem(pg.ImageItem):
+class ThumbnailImageItem(DisplayImageItem):
     windowLevelRequested = Signal(float, float)
 
     def mouseDragEvent(self, event: Any) -> None:  # noqa: N802 - pyqtgraph API
@@ -69,7 +70,7 @@ class ThumbnailPlot(pg.PlotWidget):
         self._mask_style_signature: tuple[object, ...] | None = None
         self._locator_plane: str | None = None
         self.item = ThumbnailImageItem()
-        self.mask_item = pg.ImageItem()
+        self.mask_item = DisplayImageItem()
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setZValue(10)
         self.locator_vertical = pg.InfiniteLine(angle=90, movable=False)
@@ -143,6 +144,13 @@ class ThumbnailPlot(pg.PlotWidget):
         if signature != self._geometry_signature:
             self._geometry_signature = signature
             self.autoRange(padding=0.02)
+
+    def clear_images(self) -> None:
+        self._feedback_timer.stop()
+        self.item.clear()
+        self.mask_item.clear()
+        self._mask_data = None
+        self._mask_style_signature = None
 
     def set_locator(
         self,
@@ -405,6 +413,8 @@ class ImagePreviewStrip(QFrame):
         active_index: int,
         levels_by_image: dict[int, tuple[float, float]] | None = None,
     ) -> None:
+        for plot in self._plots.values():
+            plot.clear_images()
         while self.items_layout.count():
             item = self.items_layout.takeAt(0)
             if item.widget() is not None:

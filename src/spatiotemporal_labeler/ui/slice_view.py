@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
 from .frame_labels import PHASE_LABEL_COLORS
+from .image_item import DisplayImageItem
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -288,7 +289,7 @@ def region_grow_preview_overlay(selection: np.ndarray) -> np.ndarray:
     return rgba
 
 
-class EditableImageItem(pg.ImageItem):
+class EditableImageItem(DisplayImageItem):
     activated = Signal()
     strokeStarted = Signal(int, int, bool)
     strokeMoved = Signal(int, int, bool)
@@ -415,10 +416,10 @@ class SliceView(pg.PlotWidget):
         self._data_rect: QRectF | None = None
         self._geometry_signature: tuple[float, ...] | None = None
         self.image_item = EditableImageItem()
-        self.threshold_item = pg.ImageItem()
-        self.applied_threshold_item = pg.ImageItem()
-        self.mask_item = pg.ImageItem()
-        self.region_grow_preview_item = pg.ImageItem()
+        self.threshold_item = DisplayImageItem()
+        self.applied_threshold_item = DisplayImageItem()
+        self.mask_item = DisplayImageItem()
+        self.region_grow_preview_item = DisplayImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
             symbol="s",
@@ -769,9 +770,9 @@ class TemporalView(pg.PlotWidget):
         self._data_rect: QRectF | None = None
         self._geometry_signature: tuple[float, ...] | None = None
         self.image_item = EditableImageItem()
-        self.threshold_item = pg.ImageItem()
-        self.applied_threshold_item = pg.ImageItem()
-        self.mask_item = pg.ImageItem()
+        self.threshold_item = DisplayImageItem()
+        self.applied_threshold_item = DisplayImageItem()
+        self.mask_item = DisplayImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
             symbol="s",

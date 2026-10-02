@@ -113,6 +113,7 @@ class SurfaceRequest:
     state: SurfaceState
     values: frozenset[int]
     settings: RenderSettings
+    interactive: bool = False
 
 
 def _label_surface(
@@ -325,6 +326,8 @@ class Mask3DViewer(QWidget):
         self._surface_state: SurfaceState | None = None
         self._rendered_cache_key: object | None = None
         self._surface_generation = 0
+        self._minimum_surface_generation = 0
+        self._rendered_generation = 0
         self._active_request: SurfaceRequest | None = None
         self._tasks: dict[int, SurfaceTask] = {}
         self._thread_pool = QThreadPool(self)
@@ -523,16 +526,29 @@ class Mask3DViewer(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         self._surface_generation += 1
+        self._minimum_surface_generation = self._surface_generation
         self._rendering_enabled = False
         self._timer.stop()
         self._refine_timer.stop()
         self._cursor_timer.stop()
         self._pending = None
+        self._surface_state = None
+        self._refine_state = None
         self._thread_pool.clear()
         self._thread_pool.waitForDone()
         self._active_request = None
         self._tasks.clear()
+        self._clear_segment_pipelines()
         super().closeEvent(event)
+
+    def _clear_segment_pipelines(self) -> None:
+        render_window = self.vtk_widget.GetRenderWindow()
+        for pipeline in self.segment_pipelines.values():
+            self.renderer.RemoveActor(pipeline.actor)
+            pipeline.mapper.SetInputData(vtkPolyData())
+            if self._initialized:
+                pipeline.mapper.ReleaseGraphicsResources(render_window)
+        self.segment_pipelines.clear()
 
     def clear_lasso(self) -> None:
         was_visible = any(
@@ -869,6 +885,7 @@ class Mask3DViewer(QWidget):
             return
         self._rendering_enabled = enabled
         self._surface_generation += 1
+        self._minimum_surface_generation = self._surface_generation
         self._timer.stop()
         self._refine_timer.stop()
         self._refine_state = None
@@ -882,9 +899,7 @@ class Mask3DViewer(QWidget):
         )
         if not enabled:
             self.clear_lasso()
-            for pipeline in self.segment_pipelines.values():
-                pipeline.actor.SetVisibility(False)
-                pipeline.mapper.SetInputData(vtkPolyData())
+            self._clear_segment_pipelines()
             self.cursor_actor.SetVisibility(False)
         else:
             self.cursor_actor.SetVisibility(self._cursor_state is not None)
@@ -942,6 +957,7 @@ class Mask3DViewer(QWidget):
     ) -> None:
         if frame is None:
             self._surface_generation += 1
+            self._minimum_surface_generation = self._surface_generation
             self._timer.stop()
             self._pending = None
             self._surface_state = None
@@ -951,8 +967,7 @@ class Mask3DViewer(QWidget):
             self._refine_timer.stop()
             self._refine_state = None
             self._display_definitions.clear()
-            for pipeline in self.segment_pipelines.values():
-                pipeline.actor.SetVisibility(False)
+            self._clear_segment_pipelines()
             if self._initialized and self._rendering_enabled:
                 self.vtk_widget.GetRenderWindow().Render()
                 self._cursor_timer.stop()
@@ -987,6 +1002,11 @@ class Mask3DViewer(QWidget):
             scene_key if scene_key is not None else state_cache_key,
             scene_bounds,
         )
+        previous_state = self._surface_state
+        if previous_state is None or state.scene_key != previous_state.scene_key:
+            self._minimum_surface_generation = self._surface_generation + 1
+            self._clear_segment_pipelines()
+            self._rendered_cache_key = None
         self._surface_state = state
         if not self._rendering_enabled:
             return
@@ -1059,16 +1079,23 @@ class Mask3DViewer(QWidget):
                 combined_values.update(outstanding.values)
         combined_values.intersection_update(self._visible_values())
         self._surface_generation += 1
+        if not prioritize:
+            # Edits and geometry-setting changes invalidate older results.
+            # Time navigation can display completed frames while coalescing
+            # newer requests, so held keys cannot starve the 3D display.
+            self._minimum_surface_generation = self._surface_generation
         request = SurfaceRequest(
             self._surface_generation,
             state,
             frozenset(combined_values),
             settings or self.render_settings,
+            interactive=prioritize,
         )
         self._pending = request
         if not request.values:
             self._pending = None
             self._rendered_cache_key = state.cache_key
+            self._rendered_generation = request.generation
             self._apply_actor_styles()
             if self._initialized:
                 self.vtk_widget.GetRenderWindow().Render()
@@ -1135,13 +1162,15 @@ class Mask3DViewer(QWidget):
             self._active_request = None
         if (
             request is not None
-            and generation == self._surface_generation
             and self._rendering_enabled
             and isinstance(meshes, dict)
         ):
             self._apply_surface_result(request, meshes, worker_duration_ms)
         if self._pending is not None and self._rendering_enabled:
-            self._timer.start(0)
+            if self._pending.interactive:
+                self._apply_pending()
+            else:
+                self._timer.start(0)
 
     @Slot(int, str)
     def _surface_task_failed(self, generation: int, message: str) -> None:
@@ -1159,7 +1188,14 @@ class Mask3DViewer(QWidget):
         meshes: dict[int, vtkPolyData],
         worker_duration_ms: float,
     ) -> None:
-        if request.generation != self._surface_generation or not self._rendering_enabled:
+        if (
+            not self._rendering_enabled
+            or self._surface_state is None
+            or request.state.scene_key != self._surface_state.scene_key
+            or request.generation < self._minimum_surface_generation
+            or request.generation <= self._rendered_generation
+            or (not request.interactive and request.generation != self._surface_generation)
+        ):
             return
         started = monotonic()
         for value, mesh in meshes.items():
@@ -1189,6 +1225,7 @@ class Mask3DViewer(QWidget):
             self._last_cursor_render_time = monotonic()
         completed = monotonic()
         self._rendered_cache_key = request.state.cache_key
+        self._rendered_generation = request.generation
         self._last_apply_duration_ms = worker_duration_ms + (completed - started) * 1000.0
         self._last_apply_time = completed
 

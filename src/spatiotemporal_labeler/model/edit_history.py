@@ -43,27 +43,53 @@ def _contiguous_frame_slice(frames: tuple[int, ...]) -> slice | None:
     return None
 
 
-def capture_frames(mask: Sequence4D, frames: tuple[int, ...]) -> NDArray:
+def _spatial_slices(
+    mask: Sequence4D, bounds: tuple[slice, slice, slice] | None,
+) -> tuple[slice, slice, slice]:
+    selected = bounds or tuple(slice(0, length) for length in mask.shape_xyz)
+    if len(selected) != 3:
+        raise ValueError("Edit bounds must contain one slice for each spatial axis")
+    normalized = []
+    for bound, length in zip(selected, mask.shape_xyz):
+        start, stop, step = bound.indices(length)
+        if step != 1:
+            raise ValueError("Edit bounds must use a step of 1")
+        normalized.append(slice(start, max(start, stop)))
+    return tuple(normalized)
+
+
+def capture_frames(
+    mask: Sequence4D,
+    frames: tuple[int, ...],
+    spatial_bounds: tuple[slice, slice, slice] | None = None,
+) -> NDArray:
     """Copy selected frames without advanced indexing when they are contiguous."""
     if not frames or any(frame < 0 or frame >= mask.frame_count for frame in frames):
         raise ValueError("Edit frames must be inside the label sequence")
     frame_slice = _contiguous_frame_slice(frames)
+    bounds = _spatial_slices(mask, spatial_bounds)
     if frame_slice is not None:
-        return mask.data[..., frame_slice].copy()
-    return mask.data[..., np.asarray(frames, dtype=np.intp)].copy()
+        return mask.data[bounds + (frame_slice,)].copy()
+    return mask.data[bounds + (np.asarray(frames, dtype=np.intp),)].copy()
 
 
-def restore_frames(mask: Sequence4D, frames: tuple[int, ...], snapshot: NDArray) -> None:
+def restore_frames(
+    mask: Sequence4D,
+    frames: tuple[int, ...],
+    snapshot: NDArray,
+    spatial_bounds: tuple[slice, slice, slice] | None = None,
+) -> None:
     """Restore a snapshot captured by :func:`capture_frames`."""
-    expected_shape = (*mask.shape_xyz, len(frames))
+    bounds = _spatial_slices(mask, spatial_bounds)
+    expected_shape = (*(bound.stop - bound.start for bound in bounds), len(frames))
     if snapshot.shape != expected_shape:
         raise ValueError(f"Edit snapshot shape {snapshot.shape} does not match {expected_shape}")
     frame_slice = _contiguous_frame_slice(frames)
     if frame_slice is not None:
-        mask.data[..., frame_slice] = snapshot
+        mask.data[bounds + (frame_slice,)] = snapshot
         return
     for local_frame, frame in enumerate(frames):
-        mask.data[..., frame] = snapshot[..., local_frame]
+        mask.data[bounds + (frame,)] = snapshot[..., local_frame]
 
 
 def build_edit_command(
@@ -72,26 +98,27 @@ def build_edit_command(
     before: NDArray,
     focus_frame: int,
     spatial_bounds: tuple[slice, slice, slice] | None = None,
+    snapshot_bounds: tuple[slice, slice, slice] | None = None,
 ) -> EditCommand | None:
     """Build a sparse command by comparing captured frames with their current values."""
     frame_indices = np.asarray(frames, dtype=np.intp)
-    expected_shape = (*mask.shape_xyz, len(frames))
+    captured_bounds = _spatial_slices(mask, snapshot_bounds)
+    expected_shape = (*(bound.stop - bound.start for bound in captured_bounds), len(frames))
     if before.shape != expected_shape:
         raise ValueError(f"Edit snapshot shape {before.shape} does not match {expected_shape}")
 
-    bounds = spatial_bounds or tuple(slice(0, length) for length in mask.shape_xyz)
-    if len(bounds) != 3:
-        raise ValueError("Edit bounds must contain one slice for each spatial axis")
-    normalized_bounds: list[slice] = []
-    offsets: list[int] = []
-    for bound, length in zip(bounds, mask.shape_xyz):
-        start, stop, step = bound.indices(length)
-        if step != 1:
-            raise ValueError("Edit bounds must use a step of 1")
-        normalized_bounds.append(slice(start, stop))
-        offsets.append(start)
-    spatial_slices = tuple(normalized_bounds)
-    before_region = before[spatial_slices + (slice(None),)]
+    spatial_slices = _spatial_slices(mask, spatial_bounds or snapshot_bounds)
+    if any(
+        bound.start < captured.start or bound.stop > captured.stop
+        for bound, captured in zip(spatial_slices, captured_bounds)
+    ):
+        raise ValueError("Edit bounds must be inside the captured snapshot")
+    local_slices = tuple(
+        slice(bound.start - captured.start, bound.stop - captured.start)
+        for bound, captured in zip(spatial_slices, captured_bounds)
+    )
+    offsets = [bound.start for bound in spatial_slices]
+    before_region = before[local_slices + (slice(None),)]
     frame_slice = _contiguous_frame_slice(frames)
     frame_selection: slice | NDArray[np.intp] = (
         frame_slice if frame_slice is not None else frame_indices

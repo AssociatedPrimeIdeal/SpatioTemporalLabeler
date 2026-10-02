@@ -8,7 +8,12 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- Brush and eraser gestures now snapshot only their editing plane instead of copying entire frames, reducing temporary memory use and stroke-start latency. Image loading also avoids rebuilding the preview strip twice per activation.
+- Threshold-constrained 3D scissors now process one frame selection at a time instead of allocating selections for every frame before editing.
+
 ### Fixed
+
+- Held time-navigation keys now keep the 3D labels updating while frames advance, and closing files releases cached 2D display buffers and 3D surface resources. Single-frame uint8 temporal views no longer retain closed image sequences through invalid Qt image buffers.
 
 ## 0.4.7 - 2026-09-15
 
