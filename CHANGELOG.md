@@ -8,6 +8,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+### Fixed
+
+## 0.4.8 - 2026-10-02
+
+### Added
+
+### Changed
+
 - Brush and eraser gestures now snapshot only their editing plane instead of copying entire frames, reducing temporary memory use and stroke-start latency. Image loading also avoids rebuilding the preview strip twice per activation.
 - Threshold-constrained 3D scissors now process one frame selection at a time instead of allocating selections for every frame before editing.
 
