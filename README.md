@@ -113,6 +113,8 @@ spatiotemporal-labeler
 
 Enable **All time frames** to apply ordinary spatial gestures in every frame. Temporal propagation has its own default all-frame range and does not use this option. It begins from a spatial-view source patch, then independently matches each voxel only into adjacent frames; it does not grow within a frame and stops in a direction after an unmatched frame.
 
+Choose **All frames (current-frame threshold)** to filter a spatial brush, eraser, contour, or scissors gesture using the applied threshold in the frame where it starts, then apply the same region to every frame regardless of their thresholds. The threshold mask stays checked, and the complete edit is one undo step. You can assign an optional shortcut in Settings; tapping toggles the mode, while holding it through a stroke applies it temporarily.
+
 ## Data Contract
 
 Image and label sequences are normalized internally to canonical RAS `[X,Y,Z,T]`; 3D sources use a singleton T axis. Saving reverses the source transform and preserves the original dimensionality and relevant NRRD/NIfTI metadata. When a spatially matching 3D label sequence is opened over a 4D image, it can be copied to every frame (the default) or placed in one selected frame; the mapped result becomes a new unsaved 4D label sequence. Other editing requires a matching voxel grid.

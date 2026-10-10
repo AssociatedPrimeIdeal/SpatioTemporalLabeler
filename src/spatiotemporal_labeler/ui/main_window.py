@@ -121,6 +121,7 @@ class PendingContour:
     points: list[tuple[int, int]]
     label_value: int
     ignore_threshold: bool = False
+    threshold_frame: int | None = None
 
 
 @dataclass
@@ -196,11 +197,13 @@ class MainWindow(QMainWindow):
         self._picker_held = False
         self._threshold_bypass_held = False
         self._all_frames_bypass_held = False
+        self._all_frames_current_threshold_held = False
         self._edit_mode_shortcuts_used_for_stroke: set[str] = set()
         self._updating_edit_modes = False
         self._labels_hidden_held = False
         self._hover_status_context: tuple[str, int, int] | None = None
         self._stroke_ignore_threshold = False
+        self._stroke_threshold_frame: int | None = None
         self._maximized_plane: str | None = None
         self._last_clicked_slice_plane: str | None = None
         self._mask_labels: dict[int, dict[int, LabelDefinition]] = {}
@@ -233,6 +236,7 @@ class MainWindow(QMainWindow):
         self._lasso_3d_before: np.ndarray | None = None
         self._lasso_3d_focus_frame = 0
         self._lasso_3d_ignore_threshold = False
+        self._lasso_3d_threshold_frame: int | None = None
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
         self._cardiac_phases: dict[int, CardiacPhaseFrames | None] = {}
@@ -437,22 +441,28 @@ class MainWindow(QMainWindow):
         self.slider_value_label = QLabel("T 0 / 0")
         self.slider_value_label.setMinimumWidth(100)
         navigation_controls.addWidget(self.slider_value_label)
+        edit_mode_controls = QHBoxLayout()
+        edit_mode_controls.addStretch()
         self.all_frames_toggle = QCheckBox()
-        navigation_controls.addWidget(self.all_frames_toggle)
+        edit_mode_controls.addWidget(self.all_frames_toggle)
         self.threshold_bypass_toggle = QCheckBox()
-        navigation_controls.addWidget(self.threshold_bypass_toggle)
+        edit_mode_controls.addWidget(self.threshold_bypass_toggle)
         self.all_frames_bypass_toggle = QCheckBox()
-        navigation_controls.addWidget(self.all_frames_bypass_toggle)
+        edit_mode_controls.addWidget(self.all_frames_bypass_toggle)
+        self.all_frames_current_threshold_toggle = QCheckBox()
+        edit_mode_controls.addWidget(self.all_frames_current_threshold_toggle)
         self._edit_mode_toggles = {
             "all_frames": self.all_frames_toggle,
             "threshold_bypass": self.threshold_bypass_toggle,
             "all_frames_bypass": self.all_frames_bypass_toggle,
+            "all_frames_current_threshold": self.all_frames_current_threshold_toggle,
         }
         for mode, toggle in self._edit_mode_toggles.items():
             toggle.toggled.connect(
                 lambda enabled, mode_key=mode: self._edit_mode_toggled(mode_key, enabled)
             )
         navigation.addLayout(navigation_controls)
+        navigation.addLayout(edit_mode_controls)
         self.frame_label_timeline = FrameLabelTimeline()
         self.frame_label_timeline.set_slider(self.axis_slider)
         self.frame_label_timeline.labelClicked.connect(self._frame_label_clicked)
@@ -923,6 +933,12 @@ class MainWindow(QMainWindow):
         self.threshold_bypass_toggle.setToolTip(self._tr("threshold_bypass_tip"))
         self.all_frames_bypass_toggle.setText(self._tr("all_frames_bypass"))
         self.all_frames_bypass_toggle.setToolTip(self._tr("all_frames_bypass_tip"))
+        self.all_frames_current_threshold_toggle.setText(
+            self._tr("all_frames_current_threshold")
+        )
+        self.all_frames_current_threshold_toggle.setToolTip(
+            self._tr("all_frames_current_threshold_tip")
+        )
         self.threshold_mask_action.setText(self._tr("threshold_mask"))
         self.settings_action.setText(self._tr("settings"))
         self.image_previews_action.setText(self._tr("image_previews"))
@@ -1082,6 +1098,7 @@ class MainWindow(QMainWindow):
             "all_frames_hold",
             "threshold_bypass",
             "all_frames_bypass",
+            "all_frames_current_threshold",
         ):
             if (
                 self.active_mask is not None
@@ -2792,6 +2809,12 @@ class MainWindow(QMainWindow):
         self._mark_held_edit_mode_shortcuts_used_for_stroke()
         self._stroke_ignore_threshold = self._threshold_bypass_active()
         self._stroke_frame = self.cursor[3]
+        self._stroke_threshold_frame = (
+            self._stroke_frame
+            if plane in PLANE_AXES
+            and self._effective_edit_mode() == "all_frames_current_threshold"
+            else None
+        )
         self._stroke_context = self._plane_context(plane)
         self._stroke_bounds = None
         if self._stroke_tool == "grow":
@@ -2871,6 +2894,7 @@ class MainWindow(QMainWindow):
                 list(self._contour),
                 self.active_label_value,
                 self._stroke_ignore_threshold,
+                self._stroke_threshold_frame,
             )
             self._clear_stroke(keep_contour=True)
             self.statusBar().showMessage(self._tr("contour_pending"), 6000)
@@ -2919,21 +2943,13 @@ class MainWindow(QMainWindow):
         if not planes:
             return 0
         selection = polygon_selection(planes[0].shape, points)
-        threshold_enabled = (
-            not self._stroke_ignore_threshold and self._applied_threshold_is_active()
+        allowed_planes = self._editing_threshold_planes(
+            plane,
+            self._stroke_frames,
+            self._stroke_context,
+            self._stroke_ignore_threshold,
+            self._stroke_threshold_frame,
         )
-        if not threshold_enabled:
-            allowed_planes: list[np.ndarray | None] = [None] * len(planes)
-        elif plane in TEMPORAL_AXES:
-            threshold = self._active_threshold_selection()
-            allowed_planes = [self._array_plane(threshold, plane, None, self._stroke_context)]
-        else:
-            allowed_planes = [
-                self._array_spatial_frame(
-                    self._active_threshold_frame(frame), plane, self._stroke_context
-                )
-                for frame in self._stroke_frames
-            ]
         source = self.lasso_panel.source_value(self.active_label_value)
         target = (
             self.lasso_panel.target_value
@@ -2967,6 +2983,11 @@ class MainWindow(QMainWindow):
         self._lasso_3d_ignore_threshold = self._threshold_bypass_active()
         self._lasso_3d_mask = mask
         self._lasso_3d_focus_frame = self.cursor[3]
+        self._lasso_3d_threshold_frame = (
+            self._lasso_3d_focus_frame
+            if self._effective_edit_mode() == "all_frames_current_threshold"
+            else None
+        )
         self._lasso_3d_frames = self._spatial_edit_frames(
             mask, "lasso", self._lasso_3d_focus_frame
         )
@@ -3002,6 +3023,11 @@ class MainWindow(QMainWindow):
                     not self._lasso_3d_ignore_threshold
                     and self._applied_threshold_is_active()
                 )
+                if threshold_enabled and self._lasso_3d_threshold_frame is not None:
+                    selection = selection & self._active_threshold_frame(
+                        self._lasso_3d_threshold_frame
+                    )
+                    threshold_enabled = False
                 selections = (
                     [selection] * len(self._lasso_3d_frames)
                     if not threshold_enabled
@@ -3052,6 +3078,7 @@ class MainWindow(QMainWindow):
         self._lasso_3d_mask = None
         self._lasso_3d_frames = ()
         self._lasso_3d_before = None
+        self._lasso_3d_threshold_frame = None
         self._lasso_3d_ignore_threshold = False
 
     def _start_grow_stroke(self, plane: str, h: int, v: int) -> None:
@@ -3277,23 +3304,13 @@ class MainWindow(QMainWindow):
                 self._mutable_plane(mask, plane, frame, self._stroke_context)
                 for frame in self._stroke_frames
             ]
-        threshold_enabled = (
-            not self._stroke_ignore_threshold and self._applied_threshold_is_active()
+        allowed_planes = self._editing_threshold_planes(
+            plane,
+            self._stroke_frames,
+            self._stroke_context,
+            self._stroke_ignore_threshold,
+            self._stroke_threshold_frame,
         )
-        if not threshold_enabled:
-            allowed_planes: list[np.ndarray | None] = [None] * len(planes)
-        elif plane in TEMPORAL_AXES:
-            threshold = self._active_threshold_selection()
-            allowed_planes = [
-                self._array_plane(threshold, plane, None, self._stroke_context)
-            ]
-        else:
-            allowed_planes = [
-                self._array_spatial_frame(
-                    self._active_threshold_frame(frame), plane, self._stroke_context
-                )
-                for frame in self._stroke_frames
-            ]
         if self._stroke_tool == "eraser":
             allowed_planes = [
                 plane_data == self._stroke_label_value
@@ -3391,21 +3408,13 @@ class MainWindow(QMainWindow):
                 self._mutable_plane(pending.mask, plane, frame, pending.context)
                 for frame in pending.frames
             ]
-        threshold_enabled = (
-            not pending.ignore_threshold and self._applied_threshold_is_active()
+        allowed_planes = self._editing_threshold_planes(
+            plane,
+            pending.frames,
+            pending.context,
+            pending.ignore_threshold,
+            pending.threshold_frame,
         )
-        if not threshold_enabled:
-            allowed_planes: list[np.ndarray | None] = [None] * len(planes)
-        elif plane in TEMPORAL_AXES:
-            threshold = self._active_threshold_selection()
-            allowed_planes = [self._array_plane(threshold, plane, None, pending.context)]
-        else:
-            allowed_planes = [
-                self._array_spatial_frame(
-                    self._active_threshold_frame(frame), plane, pending.context
-                )
-                for frame in pending.frames
-            ]
         for plane_data, allowed in zip(planes, allowed_planes):
             original = plane_data.copy() if allowed is not None else None
             fill_polygon(plane_data, pending.points, value)
@@ -3457,6 +3466,7 @@ class MainWindow(QMainWindow):
         self._stroke_tool = self.tool
         self._stroke_label_value = self.active_label_value
         self._stroke_ignore_threshold = False
+        self._stroke_threshold_frame = None
         self._grow_stroke_seeds.clear()
         self._grow_stroke_last_point = None
         self._grow_stroke_seed_limit_exceeded = False
@@ -3471,6 +3481,32 @@ class MainWindow(QMainWindow):
         if self._all_frames_edit_active():
             return tuple(range(mask.frame_count))
         return (focus_frame,)
+
+    def _editing_threshold_planes(
+        self,
+        plane: str,
+        frames: tuple[int, ...],
+        context: tuple[int, ...],
+        ignore_threshold: bool,
+        reference_frame: int | None,
+    ) -> list[np.ndarray | None]:
+        if ignore_threshold or not self._applied_threshold_is_active():
+            return [None] * (1 if plane in TEMPORAL_AXES else len(frames))
+        if plane in TEMPORAL_AXES:
+            return [
+                self._array_plane(self._active_threshold_selection(), plane, None, context)
+            ]
+        if reference_frame is not None:
+            # Share the source selection, including voxels already labeled in
+            # that frame, instead of broadcasting only its changed voxels.
+            allowed = self._array_spatial_frame(
+                self._active_threshold_frame(reference_frame), plane, context
+            )
+            return [allowed] * len(frames)
+        return [
+            self._array_spatial_frame(self._active_threshold_frame(frame), plane, context)
+            for frame in frames
+        ]
 
     def _cancel_pending_contour(self, silent: bool = False) -> None:
         if self._pending_contour is None:
@@ -4198,6 +4234,10 @@ class MainWindow(QMainWindow):
                 "all_frames_bypass_on",
                 "all_frames_bypass_off",
             ),
+            "all_frames_current_threshold": (
+                "all_frames_current_threshold_on",
+                "all_frames_current_threshold_off",
+            ),
         }
         self.statusBar().showMessage(
             self._tr(message_keys[mode][0 if enabled else 1]), 4000
@@ -4215,6 +4255,7 @@ class MainWindow(QMainWindow):
         self._all_frames_held = False
         self._threshold_bypass_held = False
         self._all_frames_bypass_held = False
+        self._all_frames_current_threshold_held = False
         self._edit_mode_shortcuts_used_for_stroke.clear()
 
     def _edit_mode_shortcut_is_held(self, shortcut_key: str) -> bool:
@@ -4222,6 +4263,7 @@ class MainWindow(QMainWindow):
             "all_frames_hold": "_all_frames_held",
             "threshold_bypass": "_threshold_bypass_held",
             "all_frames_bypass": "_all_frames_bypass_held",
+            "all_frames_current_threshold": "_all_frames_current_threshold_held",
         }
         return bool(getattr(self, attributes[shortcut_key]))
 
@@ -4230,11 +4272,13 @@ class MainWindow(QMainWindow):
             "all_frames_hold": "_all_frames_held",
             "threshold_bypass": "_threshold_bypass_held",
             "all_frames_bypass": "_all_frames_bypass_held",
+            "all_frames_current_threshold": "_all_frames_current_threshold_held",
         }
         modes = {
             "all_frames_hold": "all_frames",
             "threshold_bypass": "threshold_bypass",
             "all_frames_bypass": "all_frames_bypass",
+            "all_frames_current_threshold": "all_frames_current_threshold",
         }
         if pressed:
             setattr(self, attributes[shortcut_key], True)
@@ -4255,22 +4299,31 @@ class MainWindow(QMainWindow):
             self._edit_mode_shortcuts_used_for_stroke.add("threshold_bypass")
         if self._all_frames_bypass_held:
             self._edit_mode_shortcuts_used_for_stroke.add("all_frames_bypass")
+        if self._all_frames_current_threshold_held:
+            self._edit_mode_shortcuts_used_for_stroke.add("all_frames_current_threshold")
+
+    def _effective_edit_mode(self) -> str | None:
+        # A held shortcut temporarily overrides the selected checkbox mode.
+        for mode, held in (
+            ("all_frames_bypass", self._all_frames_bypass_held),
+            ("threshold_bypass", self._threshold_bypass_held),
+            ("all_frames_current_threshold", self._all_frames_current_threshold_held),
+            ("all_frames", self._all_frames_held),
+        ):
+            if held:
+                return mode
+        return next(
+            (mode for mode, toggle in self._edit_mode_toggles.items() if toggle.isChecked()),
+            None,
+        )
 
     def _threshold_bypass_active(self) -> bool:
-        return bool(
-            self.threshold_bypass_toggle.isChecked()
-            or self.all_frames_bypass_toggle.isChecked()
-            or self._threshold_bypass_held
-            or self._all_frames_bypass_held
-        )
+        return self._effective_edit_mode() in {"threshold_bypass", "all_frames_bypass"}
 
     def _all_frames_edit_active(self) -> bool:
-        return bool(
-            self.all_frames_toggle.isChecked()
-            or self.all_frames_bypass_toggle.isChecked()
-            or self._all_frames_held
-            or self._all_frames_bypass_held
-        )
+        return self._effective_edit_mode() in {
+            "all_frames", "all_frames_bypass", "all_frames_current_threshold"
+        }
 
     def _update_mask_combo_text(self) -> None:
         for index, mask in enumerate(self.masks):
@@ -4303,6 +4356,7 @@ class MainWindow(QMainWindow):
         self.all_frames_toggle.setEnabled(has_mask)
         self.threshold_bypass_toggle.setEnabled(has_mask)
         self.all_frames_bypass_toggle.setEnabled(has_mask)
+        self.all_frames_current_threshold_toggle.setEnabled(has_mask)
         self.frame_label_timeline.setEnabled(has_image)
         self.threshold_panel.setEnabled(has_image)
         self.threshold_panel.apply_button.setEnabled(has_image and has_mask)
