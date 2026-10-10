@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.9 - 2026-10-10
+
+### Added
+
 - Added **All frames (current-frame threshold)**: spatial brush, eraser, contour, and scissors edits use the gesture's starting-frame threshold in every frame, with one-step undo and an optional configurable shortcut.
 
 ### Changed
