@@ -10,6 +10,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Fixed
 
+## 0.4.10 - 2026-10-10
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Prevented Linux/Python 3.11 crashes caused by PySide6 6.12.0 by keeping Qt bindings below 6.12, and added the release's Linux/Python 3.11 combination to CI.
 
 ## 0.4.9 - 2026-10-10
