@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.4.11 - 2026-10-18
+
+### Added
+
 - Added saved View Orientation settings for each 2D view and its previews, the 3D viewing/up directions, and anatomical axis arrows, with live preview and cancellation that restores the previous views.
 
 ### Changed
