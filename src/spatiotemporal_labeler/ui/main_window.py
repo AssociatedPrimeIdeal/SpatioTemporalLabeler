@@ -94,6 +94,7 @@ from .lasso_panel import LassoPanel
 from .morphology_panel import MorphologyPanel
 from .region_grow_panel import RegionGrowPanel
 from .render_settings import RenderSettings
+from .orientation_settings import OrientationSettings
 from .settings_dialog import DEFAULT_SHORTCUTS, SettingsDialog
 from .slice_view import SliceView, TemporalView
 from .threshold_panel import ThresholdPanel
@@ -161,6 +162,12 @@ class MainWindow(QMainWindow):
             {
                 key: self.settings.value(f"render3d/{key}", value)
                 for key, value in render_defaults.items()
+            }
+        )
+        self.orientation_settings = OrientationSettings.normalized(
+            {
+                key: self.settings.value(f"view_orientation/{key}", value)
+                for key, value in OrientationSettings().as_dict().items()
             }
         )
         self.resize(1680, 960)
@@ -255,6 +262,7 @@ class MainWindow(QMainWindow):
             self._copied_frame_scope = "all"
         self._copied_frame_label_value: int | None = None
         self._build_ui()
+        self._apply_orientation_settings(self.orientation_settings, render=False)
         self.viewer_3d.set_render_settings(self.render_settings, render=False)
         self._build_actions()
         self._apply_style()
@@ -968,19 +976,34 @@ class MainWindow(QMainWindow):
         if self.active_image is None:
             self.statusBar().showMessage(self._tr("load_start"))
 
+    def _apply_orientation_settings(
+        self, settings: OrientationSettings, *, render: bool = True
+    ) -> None:
+        for view in self.slice_views.values():
+            view.set_orientation_settings(settings)
+        self.temporal_view.set_orientation_settings(settings)
+        self.image_previews.set_orientation_settings(settings)
+        self.viewer_3d.set_orientation_settings(settings, render=render)
+
     def _open_settings(self) -> None:
+        original_camera = self.viewer_3d.capture_camera()
         dialog = SettingsDialog(
             self.language,
             self.shortcuts,
             self,
             render_settings=self.render_settings,
+            orientation_settings=self.orientation_settings,
         )
         dialog.renderSettingsChanged.connect(self.viewer_3d.set_render_settings)
+        dialog.orientationSettingsChanged.connect(self._apply_orientation_settings)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self.viewer_3d.set_render_settings(self.render_settings)
+            self._apply_orientation_settings(self.orientation_settings, render=False)
+            self.viewer_3d.restore_camera(original_camera)
             return
         language, shortcuts = dialog.values()
         self.render_settings = dialog.render_values()
+        self.orientation_settings = dialog.orientation_values()
         self.shortcuts = shortcuts
         for key, value in shortcuts.items():
             self.settings.setValue(f"shortcuts/{key}", value)
@@ -989,6 +1012,9 @@ class MainWindow(QMainWindow):
         for key, value in self.render_settings.as_dict().items():
             self.settings.setValue(f"render3d/{key}", value)
         self.viewer_3d.set_render_settings(self.render_settings)
+        for key, value in self.orientation_settings.as_dict().items():
+            self.settings.setValue(f"view_orientation/{key}", value)
+        self._apply_orientation_settings(self.orientation_settings)
 
     def _apply_shortcuts(self) -> None:
         if not hasattr(self, "tool_actions"):

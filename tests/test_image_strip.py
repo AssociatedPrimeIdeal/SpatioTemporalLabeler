@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.model import default_label
 from spatiotemporal_labeler.ui.image_strip import ImagePreviewStrip
+from spatiotemporal_labeler.ui.orientation_settings import OrientationSettings
 
 
 class WheelEvent:
@@ -118,7 +119,7 @@ def test_other_image_preview_plane_is_selectable(tmp_path):
     assert strip.plane == "X-Z"
     assert changed == ["X-Z"]
     assert np.array_equal(strip._plots[1].item.image, images[1].data[:, 2, :, 4].T)
-    assert strip._plots[1].getViewBox().state["xInverted"]
+    assert not strip._plots[1].getViewBox().state["xInverted"]
     assert strip._plots[1].getViewBox().state["aspectLocked"]
 
     strip.set_plane("Y-T")
@@ -127,6 +128,49 @@ def test_other_image_preview_plane_is_selectable(tmp_path):
     assert np.array_equal(strip._plots[1].item.image, images[1].data[1, :, 1, :].T)
     assert not strip._plots[1].getViewBox().state["xInverted"]
     assert not strip._plots[1].getViewBox().state["aspectLocked"]
+
+
+def test_other_image_previews_keep_display_directions_across_plane_switches(tmp_path):
+    application = QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+    strip.show()
+
+    for plane in ("X-Y", "Y-Z", "X-Z", "Y-T", "X-T", "Z-T", "X-T"):
+        strip.set_plane(plane)
+        strip.update_images(images, (1, 2, 1, 4))
+        application.processEvents()
+        plot = strip._plots[1]
+        left = plot.item.mapToScene(QPointF(0.5, 0.5))
+        right = plot.item.mapToScene(QPointF(plot.item.image.shape[1] - 0.5, 0.5))
+        assert (left.x() > right.x()) == (plane == "Y-Z")
+
+    strip.close()
+    strip.deleteLater()
+
+
+def test_preview_orientation_updates_cached_images_and_survives_card_rebuilds(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [make_sequence(tmp_path / "first.nrrd"), make_sequence(tmp_path / "second.nrrd")]
+    strip = ImagePreviewStrip()
+    strip.rebuild(images, active_index=0)
+    strip.update_images(images, (1, 2, 1, 4))
+    plot = strip._plots[1]
+    image_buffer = plot.item.image
+    settings = OrientationSettings.normalized({"X-Y/horizontal": True, "X-Y/vertical": True})
+
+    strip.set_orientation_settings(settings)
+
+    assert plot.item.image is image_buffer
+    assert plot.getViewBox().state["xInverted"]
+    assert plot.getViewBox().state["yInverted"]
+    strip.rebuild(images, active_index=1)
+    strip.update_images(images, (1, 2, 1, 4))
+    assert strip._plots[0].getViewBox().state["xInverted"]
+    assert strip._plots[0].getViewBox().state["yInverted"]
+    strip.close()
+    strip.deleteLater()
 
 
 def test_other_image_preview_uses_physical_location_spacing_and_orientation(tmp_path):
@@ -153,7 +197,7 @@ def test_other_image_preview_uses_physical_location_spacing_and_orientation(tmp_
 
     plot = strip._plots[1]
     assert np.array_equal(plot.item.image, images[1].data[:, :, 1, 4].T)
-    assert plot.getViewBox().state["xInverted"]
+    assert not plot.getViewBox().state["xInverted"]
     assert np.isclose(plot.item.transform().m11(), 2.0)
     assert np.isclose(plot.item.transform().m22(), 3.0)
 

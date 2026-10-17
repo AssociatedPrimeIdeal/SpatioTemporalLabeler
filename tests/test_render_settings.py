@@ -35,8 +35,8 @@ def test_settings_dialog_exposes_simple_3d_rendering_controls():
         "en", DEFAULT_SHORTCUTS, render_settings=selected
     )
 
-    assert dialog.tabs.count() == 2
-    assert dialog.tabs.tabText(1) == "3D Rendering"
+    assert dialog.tabs.count() == 3
+    assert dialog.tabs.tabText(2) == "3D Rendering"
     assert dialog.render_values() == selected
 
     dialog._restore_defaults()

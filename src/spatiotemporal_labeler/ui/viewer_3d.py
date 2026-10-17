@@ -24,6 +24,7 @@ import vtkmodules.vtkRenderingOpenGL2  # noqa: F401 - registers the OpenGL rende
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import VTK_INT, vtkPoints
+from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import (
     vtkDecimatePro,
@@ -48,6 +49,7 @@ from vtkmodules.vtkRenderingCore import (
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
 from .render_settings import DETAIL_REDUCTION, RenderSettings
+from .orientation_settings import ANATOMICAL_VECTORS, OrientationSettings
 
 
 STYLE_PRESETS = {
@@ -347,7 +349,8 @@ class Mask3DViewer(QWidget):
         self.cursor_renderer.AddActor(self.cursor_actor)
         self._build_lasso_actors()
 
-        axes = vtkAxesActor()
+        self.orientation_settings = OrientationSettings()
+        self.orientation_axes = axes = vtkAxesActor()
         axes.SetXAxisLabelText("R")
         axes.SetYAxisLabelText("A")
         axes.SetZAxisLabelText("H")
@@ -391,6 +394,44 @@ class Mask3DViewer(QWidget):
         self._refine_timer.setSingleShot(True)
         self._refine_timer.setInterval(220)
         self._refine_timer.timeout.connect(self._refine_latest_surface)
+
+    def set_orientation_settings(
+        self, settings: OrientationSettings, *, render: bool = True
+    ) -> None:
+        previous = self.orientation_settings
+        self.orientation_settings = settings
+        if (settings.camera_view, settings.camera_up) != (
+            previous.camera_view, previous.camera_up
+        ):
+            camera = self.renderer.GetActiveCamera()
+            center = np.asarray(camera.GetFocalPoint())
+            distance = max(float(camera.GetDistance()), 1.0)
+            direction = np.asarray(ANATOMICAL_VECTORS[settings.camera_view])
+            camera.SetPosition(*(center + distance * direction))
+            camera.SetViewUp(*ANATOMICAL_VECTORS[settings.camera_up])
+            camera.OrthogonalizeViewUp()
+            self._reset_camera_clipping_range()
+        matrix = vtkMatrix4x4()
+        matrix.Identity()
+        for index, direction in enumerate(settings.axis_directions):
+            matrix.SetElement(index, index, ANATOMICAL_VECTORS[direction][index])
+        self.orientation_axes.SetXAxisLabelText(settings.axis_directions[0])
+        self.orientation_axes.SetYAxisLabelText(settings.axis_directions[1])
+        self.orientation_axes.SetZAxisLabelText(settings.axis_directions[2])
+        self.orientation_axes.SetUserMatrix(matrix)
+        if render and self._initialized and self.isVisible():
+            self._render_visible_scene()
+
+    def capture_camera(self) -> Any:
+        camera = self.renderer.GetActiveCamera()
+        snapshot = camera.NewInstance()
+        snapshot.DeepCopy(camera)
+        return snapshot
+
+    def restore_camera(self, snapshot: Any) -> None:
+        self.renderer.GetActiveCamera().DeepCopy(snapshot)
+        if self._initialized and self.isVisible():
+            self._render_visible_scene()
 
     def _build_lasso_actors(self) -> None:
         color = (1.0, 0.78, 0.34)

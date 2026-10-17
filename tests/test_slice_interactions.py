@@ -300,30 +300,43 @@ def test_yz_view_runs_from_anterior_to_posterior():
     view.deleteLater()
 
 
-def test_x_spatial_and_temporal_views_run_from_right_to_left():
-    ensure_application()
+def test_x_spatial_and_temporal_views_run_from_left_to_right():
+    application = ensure_application()
     spatial_views = [SliceView("X-Y"), SliceView("X-Z")]
     temporal_view = TemporalView()
+    image = np.arange(24, dtype=np.float32).reshape(8, 3)
+    mask = np.zeros((8, 3), dtype=np.uint8)
+    mask[1, 1] = 1
+    for view in spatial_views:
+        fixed_axis = "Z" if view.plane == "X-Y" else "Y"
+        view.set_slice(image, mask, (2.0, 3.0), (0.0, 23.0), fixed_axis, 0, cursor=(1, 1))
     temporal_view.set_sequence_slice(
-        np.zeros((8, 3), dtype=np.float32),
-        None,
+        image,
+        mask,
         "X-T",
-        1.0,
-        (0.0, 1.0),
+        2.0,
+        (0.0, 23.0),
         0,
         "Y 0, Z 0",
+        cursor=(1, 1),
     )
 
     assert temporal_view.spatial_line.pen.style() == Qt.PenStyle.DashLine
     assert temporal_view.time_line.pen.style() == Qt.PenStyle.DashLine
 
-    for view in spatial_views:
-        assert view.getAxis("bottom").labelText == "R - L"
-        assert view.getViewBox().state["xInverted"]
-    assert temporal_view.getAxis("bottom").labelText == "R - L"
-    assert temporal_view.getViewBox().state["xInverted"]
-
     for view in [*spatial_views, temporal_view]:
+        view.resize(400, 300)
+        view.show()
+        application.processEvents()
+        assert view.getAxis("bottom").labelText == "L - R"
+        assert not view.getViewBox().state["xInverted"]
+        left = view.image_item.mapToScene(QPointF(1.5, 1.5))
+        right = view.image_item.mapToScene(QPointF(6.5, 1.5))
+        assert left.x() < right.x()
+        assert view.image_item._voxel(view.image_item.mapFromScene(left)) == (1, 1)
+        assert view.mask_item.image[1, 1, 3] > 0
+        assert view.mask_item.mapToScene(QPointF(1.5, 1.5)) == left
+        assert view.image_item.image[1, 1] == image[1, 1]
         view.close()
         view.deleteLater()
 

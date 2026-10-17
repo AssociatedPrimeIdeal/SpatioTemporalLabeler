@@ -23,6 +23,7 @@ from spatiotemporal_labeler.model import LabelDefinition
 
 from .slice_view import AXIS_COLORS, label_overlay
 from .image_item import DisplayImageItem
+from .orientation_settings import OrientationSettings
 
 
 PREVIEW_PLANES = ("X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T")
@@ -61,6 +62,8 @@ class ThumbnailPlot(pg.PlotWidget):
     ) -> None:
         super().__init__(parent=parent, background="#101719")
         self.index = index
+        self.orientation_settings = OrientationSettings()
+        self._plane = "X-Y"
         self._geometry_signature: tuple[object, ...] | None = None
         self._default_levels: tuple[float, float] | None = None
         self._levels = initial_levels
@@ -129,9 +132,7 @@ class ThumbnailPlot(pg.PlotWidget):
         self.item.setRect(self._data_rect)
         if self.mask_item.image is not None:
             self.mask_item.setRect(self._data_rect)
-        # Main spatial views are RAS-oriented and invert X.  The temporal
-        # view does the same only for X-T, so previews must use the same map.
-        invert_x = plane in SPATIAL_PLANES or plane == "X-T"
+        self._plane = plane
         signature = (
             *image.shape,
             plane,
@@ -139,11 +140,17 @@ class ThumbnailPlot(pg.PlotWidget):
             vertical_spacing,
         )
         view_box = self.getViewBox()
-        view_box.invertX(invert_x)
+        self.set_orientation_settings(self.orientation_settings)
         view_box.setAspectLocked(plane in SPATIAL_PLANES)
         if signature != self._geometry_signature:
             self._geometry_signature = signature
             self.autoRange(padding=0.02)
+
+    def set_orientation_settings(self, settings: OrientationSettings) -> None:
+        self.orientation_settings = settings
+        horizontal, vertical = settings.flips(self._plane)
+        self.getViewBox().invertX(horizontal)
+        self.getViewBox().invertY(vertical)
 
     def clear_images(self) -> None:
         self._feedback_timer.stop()
@@ -317,6 +324,7 @@ class ImagePreviewStrip(QFrame):
         self.setObjectName("imagePreviewStrip")
         self._collapsed = False
         self._language = "en"
+        self.orientation_settings = OrientationSettings()
         self._plots: dict[int, ThumbnailPlot] = {}
         self._cards: dict[int, QWidget] = {}
         self._value_ranges: dict[int, tuple[float, float]] = {}
@@ -365,6 +373,11 @@ class ImagePreviewStrip(QFrame):
         signals_were_blocked = self.plane_selector.blockSignals(not emit)
         self.plane_selector.setCurrentText(plane)
         self.plane_selector.blockSignals(signals_were_blocked)
+
+    def set_orientation_settings(self, settings: OrientationSettings) -> None:
+        self.orientation_settings = settings
+        for plot in self._plots.values():
+            plot.set_orientation_settings(settings)
 
     def set_language(self, language: str) -> None:
         self._language = language
@@ -444,6 +457,7 @@ class ImagePreviewStrip(QFrame):
                 levels_by_image.get(id(sequence)) if levels_by_image is not None else None
             )
             plot = ThumbnailPlot(index, initial_levels=initial_levels)
+            plot.set_orientation_settings(self.orientation_settings)
             plot.activated.connect(self.imageActivated)
             plot.levelsChanged.connect(self.imageLevelsChanged.emit)
             card_layout.addWidget(plot)

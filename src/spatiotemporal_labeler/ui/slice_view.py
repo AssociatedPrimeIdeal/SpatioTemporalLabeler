@@ -18,16 +18,11 @@ from spatiotemporal_labeler.model import LabelDefinition, default_label
 
 from .frame_labels import PHASE_LABEL_COLORS
 from .image_item import DisplayImageItem
+from .orientation_settings import OrientationSettings
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
 
-PLANE_DIRECTIONS = {
-    "X-Y": ("R - L", "P - A"),
-    "X-Z": ("R - L", "F - H"),
-    "Y-Z": ("A - P", "F - H"),
-}
-TEMPORAL_DIRECTIONS = {"X-T": "R - L", "Y-T": "P - A", "Z-T": "F - H"}
 AXIS_COLORS = {"X": "#ff5f5f", "Y": "#58d178", "Z": "#579dff", "T": "#f1cc4b"}
 
 
@@ -56,6 +51,10 @@ class LocatorHandle(QGraphicsObject):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 - Qt API
         return QRectF(-9.0, -9.0, 18.0, 18.0)
+
+    def set_direction(self, direction: tuple[float, float]) -> None:
+        self._direction = direction
+        self.update()
 
     def _polygon(self) -> QPolygonF:
         dx, dy = self._direction
@@ -412,6 +411,7 @@ class SliceView(pg.PlotWidget):
     def __init__(self, plane: str, parent: Any = None) -> None:
         super().__init__(parent=parent, background="#101719")
         self.plane = plane
+        self.orientation_settings = OrientationSettings()
         self.spacing = (1.0, 1.0)
         self._data_rect: QRectF | None = None
         self._geometry_signature: tuple[float, ...] | None = None
@@ -495,11 +495,7 @@ class SliceView(pg.PlotWidget):
         self.setMouseEnabled(x=False, y=False)
         self.getPlotItem().setContentsMargins(0, 0, 0, 0)
         self.getPlotItem().setTitle(plane, color="#dce8e9", size="10pt")
-        bottom, left = PLANE_DIRECTIONS[plane]
-        self.getPlotItem().setLabel("bottom", bottom, color="#8ea4a8")
-        self.getPlotItem().setLabel("left", left, color="#8ea4a8")
-        self.getViewBox().invertX(True)
-        self.getViewBox().invertY(False)
+        self.set_orientation_settings(self.orientation_settings)
         self.image_item.activated.connect(lambda: self.viewActivated.emit(self.plane))
         self.image_item.strokeStarted.connect(self._stroke_started)
         self.image_item.strokeMoved.connect(self._stroke_moved)
@@ -513,6 +509,24 @@ class SliceView(pg.PlotWidget):
         self.image_item.hoverChanged.connect(self._hover_changed)
         self.image_item.panRequested.connect(self._pan)
         self.image_item.windowLevelRequested.connect(self.windowLevelDragged.emit)
+
+    def set_orientation_settings(self, settings: OrientationSettings) -> None:
+        self.orientation_settings = settings
+        horizontal, vertical = settings.flips(self.plane)
+        for handle, direction in zip(
+            self._locator_handles[0],
+            ((0.0, 1.0 if vertical else -1.0), (0.0, -1.0 if vertical else 1.0)),
+        ):
+            handle.set_direction(direction)
+        for handle, direction in zip(
+            self._locator_handles[1],
+            ((-1.0 if horizontal else 1.0, 0.0), (1.0 if horizontal else -1.0, 0.0)),
+        ):
+            handle.set_direction(direction)
+        self.getViewBox().invertX(horizontal)
+        self.getViewBox().invertY(vertical)
+        self.getPlotItem().setLabel("bottom", settings.axis_label(self.plane, 0), color="#8ea4a8")
+        self.getPlotItem().setLabel("left", settings.axis_label(self.plane, 1), color="#8ea4a8")
 
     def _hover_changed(self, h: int, v: int, visible: bool) -> None:
         self.footprint.show_at(h, v, visible)
@@ -765,6 +779,7 @@ class TemporalView(pg.PlotWidget):
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent=parent, background="#101719")
         self.mode = "X-T"
+        self.orientation_settings = OrientationSettings()
         self.spacing = 1.0
         self.time_stretch = 1.0
         self._data_rect: QRectF | None = None
@@ -848,6 +863,14 @@ class TemporalView(pg.PlotWidget):
         self.image_item.hoverChanged.connect(self._hover_changed)
         self.image_item.panRequested.connect(self._pan)
         self.image_item.windowLevelRequested.connect(self.windowLevelDragged.emit)
+
+    def set_orientation_settings(self, settings: OrientationSettings) -> None:
+        self.orientation_settings = settings
+        horizontal, vertical = settings.flips(self.mode)
+        self.getViewBox().invertX(horizontal)
+        self.getViewBox().invertY(vertical)
+        self.getPlotItem().setLabel("bottom", settings.axis_label(self.mode, 0), color="#8ea4a8")
+        self.getPlotItem().setLabel("left", settings.axis_label(self.mode, 1), color="#8ea4a8")
 
     def _hover_changed(self, h: int, v: int, visible: bool) -> None:
         self.footprint.show_at(h, v, visible)
@@ -987,9 +1010,7 @@ class TemporalView(pg.PlotWidget):
         self.getPlotItem().setTitle(
             f"{mode}  |  {fixed_text}", color="#dce8e9", size="10pt"
         )
-        self.getPlotItem().setLabel("bottom", TEMPORAL_DIRECTIONS[mode], color="#8ea4a8")
-        self.getPlotItem().setLabel("left", "Time", color="#8ea4a8")
-        self.getViewBox().invertX(mode == "X-T")
+        self.set_orientation_settings(self.orientation_settings)
         axis = mode[0]
         self.spatial_line.setPen(
             pg.mkPen(AXIS_COLORS[axis], width=1.3, style=Qt.PenStyle.DashLine)
