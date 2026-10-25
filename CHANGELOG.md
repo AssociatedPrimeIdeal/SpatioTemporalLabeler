@@ -6,6 +6,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## 0.5.2 - 2026-10-26
+
+### Added
+
 - Added selectable Flow, Turbo, Viridis, Plasma, Inferno, Magma and Grayscale colormaps shared by 2D and 3D streamlines, with a live color legend.
 - Added a display-only Streamlines entry in the label list with visibility and right-click opacity, synchronized with the streamline panel without changing label voxels or saved label definitions.
 
