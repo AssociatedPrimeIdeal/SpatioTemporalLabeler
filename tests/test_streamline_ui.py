@@ -7,8 +7,8 @@ import time
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtWidgets import QApplication, QMenu, QSlider, QWidgetAction
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.tools.streamlines import PlanarConfig, StreamlineConfig, project_all_slices
@@ -17,6 +17,9 @@ from spatiotemporal_labeler.ui import streamline_jobs as jobs
 from spatiotemporal_labeler.ui.streamline_jobs import StreamlineController, load_frame, save_frame, source_digest
 from spatiotemporal_labeler.ui.streamline_panel import StreamlinePanel
 from spatiotemporal_labeler.ui.viewer_3d import Mask3DViewer
+from spatiotemporal_labeler.ui.label_panel import LabelPanel, STREAMLINE_ITEM, OPACITY_ROLE
+from spatiotemporal_labeler.tools.streamline_colors import COLORMAPS, speed_rgb
+from spatiotemporal_labeler.model import default_label, store_labels, labels_from_sequence
 
 
 @pytest.fixture
@@ -202,6 +205,141 @@ def test_legacy_language_setting_migrates_to_english_without_language_controls(a
             settings.remove("language")
         else:
             settings.setValue("language", previous)
+
+
+def test_conditional_rows_only_show_active_parameters(application, tmp_path):
+    panel = StreamlinePanel(QSettings(str(tmp_path / "rows.ini"), QSettings.Format.IniFormat))
+    def visible(key):
+        form, _ = panel._rows[key]
+        return form.isRowVisible(panel.labels[key])
+    try:
+        assert panel.distribution.currentData() == "grid"
+        assert not visible("stream_seeds") and not visible("stream_rng")
+        assert visible("stream_limit_grid") and not visible("stream_grid_seed_cap")
+        assert visible("stream_grid_spacing") and not visible("stream_mask_labels")
+        panel.limit_grid.setChecked(True)
+        panel.grid_seed_cap.setValue(1234)
+        assert visible("stream_grid_seed_cap") and not visible("stream_seeds")
+        assert panel.config().seed_count == 1234
+        panel.distribution.setCurrentIndex(panel.distribution.findData("random"))
+        panel.seed_count.setValue(789)
+        assert visible("stream_seeds") and visible("stream_rng")
+        assert not visible("stream_limit_grid") and not visible("stream_grid_seed_cap")
+        assert not visible("stream_grid_units") and not visible("stream_grid_spacing")
+        assert panel.config().seed_count == 789
+        panel.mode_2d.setCurrentIndex(panel.mode_2d.findData("planar"))
+        assert visible("stream_planar_seeds") and not visible("stream_slab")
+        panel.distribution.setCurrentIndex(panel.distribution.findData("grid"))
+        assert visible("stream_planar_grid_cap") and not visible("stream_planar_seeds")
+        panel.show_2d.setChecked(False)
+        assert not visible("stream_mode_2d") and not visible("stream_planar_grid_cap")
+        mask = sequence(1, "mask")
+        panel.set_masks([mask])
+        panel.seed_mask.setCurrentIndex(1)
+        assert visible("stream_mask_labels") and visible("stream_constrain_mask")
+        panel.constrain_mask.setChecked(True)
+        panel.seed_mask.setCurrentIndex(0)
+        assert not visible("stream_mask_labels") and not panel.config().constrain_to_mask
+    finally:
+        panel.deleteLater()
+
+
+def test_streamline_only_label_row_never_emits_a_voxel_label(application):
+    panel = LabelPanel()
+    selected, deleted = [], []
+    panel.labelSelected.connect(selected.append)
+    panel.deleteRequested.connect(deleted.append)
+    panel.set_labels({}, streamline_present=True)
+    item = panel.list_widget.item(0)
+    assert item.data(Qt.ItemDataRole.UserRole) == STREAMLINE_ITEM
+    assert not (item.flags() & Qt.ItemFlag.ItemIsSelectable)
+    panel._selection_changed(item, None)
+    panel._color_requested(item)
+    panel._delete_requested()
+    assert selected == [] and deleted == []
+    panel.deleteLater()
+
+
+def test_display_row_opacity_and_colormap_are_cached_and_not_saved_in_mask(application, tmp_path, monkeypatch):
+    settings = QSettings()
+    previous_settings = {key: settings.value(key) for key in settings.allKeys()}
+    window = MainWindow()
+    window.streamlines.cache_dir = tmp_path
+    sources = [sequence(3, name) for name in ("flow_x", "flow_y", "flow_z")]
+    window.images.extend(sources)
+    for source in sources:
+        window.image_combo.addItem(source.display_name)
+    mask = sequence(1, "seg")
+    mask.data = mask.data.astype(np.uint8)
+    window.masks.append(mask)
+    window._mask_labels[id(mask)] = {1: default_label(1)}
+    window.mask_combo.addItem(mask.display_name)
+    store_labels(mask, window.active_labels)
+    before_data, before_header = mask.data.copy(), dict(mask.header)
+    panel = window.streamline_panel
+    panel.set_sources(sources)
+    panel.max_steps.setValue(3)
+    panel.show_2d.setChecked(True)
+    panel.show_3d.setChecked(True)
+    panel.display_min_speed.set_value(0)
+    panel.enabled.setChecked(True)
+    window._global_opacity_changed(1)
+    window._streamline_visibility_changed(True)
+    window._compute_streamlines()
+    try:
+        wait_for(application, lambda: len(window.streamlines.frames) == 2)
+        def no_work(*_args, **_kwargs):
+            raise AssertionError("Display operation requested integration")
+        monkeypatch.setattr(window.streamlines, "request", no_work)
+        cache = window.streamlines.frames[0]
+        item = next(window.label_panel.list_widget.item(i) for i in range(window.label_panel.list_widget.count())
+                    if window.label_panel.list_widget.item(i).data(Qt.ItemDataRole.UserRole) == STREAMLINE_ITEM)
+        window.label_panel.list_widget.doItemsLayout()
+        position = window.label_panel.list_widget.visualItemRect(item).center()
+        assert window.label_panel.list_widget.itemAt(position) is item
+        errors = []
+        def inspect_menu():
+            menu = window.label_panel.findChildren(QMenu)[-1]
+            try:
+                widgets = [action.defaultWidget() for action in menu.actions() if isinstance(action, QWidgetAction)]
+                assert len(widgets) == 1
+                widgets[0].findChild(QSlider).setValue(37)
+            except Exception as error:
+                errors.append(error)
+            finally:
+                menu.close()
+        QTimer.singleShot(0, inspect_menu)
+        window.label_panel._show_label_menu(position)
+        assert errors == []
+        assert panel.opacity.value() == .37 and item.data(OPACITY_ROLE) == .37
+        assert window.viewer_3d._streamline_actor.GetProperty().GetOpacity() == .37
+        geometry = window.viewer_3d._streamline_actor.GetMapper().GetInput()
+        for name in COLORMAPS:
+            panel.colormap.setCurrentIndex(panel.colormap.findData(name))
+            actor = window.viewer_3d._streamline_actor
+            assert actor.GetMapper().GetInput() is geometry
+            lut = actor.GetMapper().GetLookupTable()
+            np.testing.assert_allclose(lut.GetTableValue(0)[:3], speed_rgb(np.array([0.0]), name)[0]/255)
+        window._global_opacity_changed(.5)
+        assert window.viewer_3d._streamline_actor.GetProperty().GetOpacity() == .185
+        item.setCheckState(Qt.CheckState.Unchecked)
+        assert window.viewer_3d._streamline_actor is None
+        item.setCheckState(Qt.CheckState.Checked)
+        assert window.viewer_3d._streamline_actor is not None
+        window._set_labels_hidden_held(True)
+        assert not window.slice_views["X-Y"].streamline_overlay.isVisible()
+        window._set_labels_hidden_held(False)
+        assert window.streamlines.frames[0] is cache
+        assert window.active_label_value == 1 and not mask.dirty
+        assert mask.header == before_header and set(labels_from_sequence(mask)) == {1}
+        np.testing.assert_array_equal(mask.data, before_data)
+    finally:
+        mask.dirty = False
+        window.close()
+        window.deleteLater()
+        settings.clear()
+        for key, value in previous_settings.items():
+            settings.setValue(key, value)
 
 
 def test_vtk_geometry_is_ras_and_visibility_does_not_depend_on_labels(application):

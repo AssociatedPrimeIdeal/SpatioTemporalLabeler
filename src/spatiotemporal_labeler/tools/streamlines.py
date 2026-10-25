@@ -16,6 +16,8 @@ from typing import Callable
 import numpy as np
 from scipy.ndimage import map_coordinates
 
+from .streamline_colors import speed_rgb
+
 
 PLANES = {"X-Y": (0, 1, 2), "X-Z": (0, 2, 1), "Y-Z": (1, 2, 0)}
 DIRECTIONS = {
@@ -34,9 +36,9 @@ class StreamlineConfig:
     directions: tuple[str, str, str] = ("F", "P", "L")
     seed_count: int = 300
     step_mm: float = 1.0
-    max_steps: int = 160
+    max_steps: int = 200
     max_length_mm: float = 200.0
-    min_speed: float = 5.0  # after input-unit calibration; native values may remain unscaled
+    min_speed: float = 1.0  # cm/s after calibration; source-unit mode is configured by the UI
     source_scale: float = 1.0
     component_scales: tuple[float, float, float] = (1.0, 1.0, 1.0)
     seed_min_speed: float = 0.0
@@ -214,12 +216,16 @@ def _integrate_field(field, spacing, basis, config, seed_mask, cancelled):
 
     def sample(points):
         coordinates = (points / spacing).T
-        vectors = np.column_stack([
-            map_coordinates(field[..., c], coordinates, order=1, mode="constant", cval=0.0,
-                            prefilter=False) for c in range(ndim)
-        ])
+        # Supply output buffers explicitly: scipy's default path repeatedly
+        # resolves dtype names and zero-fills tiny arrays on every sample call.
+        vectors = np.empty((len(points), ndim), dtype=field.dtype)
+        for component in range(ndim):
+            map_coordinates(field[..., component], coordinates, order=1,
+                            output=vectors[:, component], mode="constant", cval=0.0,
+                            prefilter=False)
         magnitudes = np.linalg.norm(vectors @ basis.T, axis=1)
-        inside = map_coordinates(support, coordinates, order=0, mode="constant", cval=0)
+        inside = np.empty(len(points), dtype=np.uint8)
+        map_coordinates(support, coordinates, output=inside, order=0, mode="constant", cval=0)
         valid = (inside > 0) & np.isfinite(magnitudes) & (magnitudes >= threshold)
         return vectors / np.maximum(magnitudes[:, None], 1e-12), magnitudes, valid
 
@@ -233,20 +239,27 @@ def _integrate_field(field, spacing, basis, config, seed_mask, cancelled):
     for batch_start in range(0, len(seeds), 512):
         _check_cancel(cancelled)
         batch = seeds[batch_start:batch_start + 512]
-        _, seed_speeds, seed_valid = sample(batch)
-        batch = batch[seed_valid & (seed_speeds >= max(threshold, config.seed_min_speed))]
+        seed_units, seed_speeds, seed_valid = sample(batch)
+        seed_valid &= seed_speeds >= max(threshold, config.seed_min_speed)
+        batch = batch[seed_valid]
+        seed_units, seed_speeds = seed_units[seed_valid], seed_speeds[seed_valid]
         if not len(batch):
             continue
         segments, speeds, owners = [], [], []
         for sign in signs:
             points = batch.copy()
+            current_units, current_speeds = seed_units.copy(), seed_speeds.copy()
             alive = np.arange(len(batch))
             for index in range(steps):
                 _check_cancel(cancelled)
                 if not len(alive):
                     break
                 selected = points[alive]
-                k1, start_speed, valid = sample(selected)
+                # An accepted endpoint is exactly the next step's start.
+                # Reuse its already interpolated direction/speed, including the
+                # initial seed sample, without changing integration arithmetic.
+                k1, start_speed = current_units[alive], current_speeds[alive]
+                valid = np.ones(len(alive), dtype=bool)
                 distance = min(step, length_budget - index * step)
                 k2, _, valid2 = sample(selected + sign * 0.5 * distance * k1)
                 valid &= valid2
@@ -269,9 +282,12 @@ def _integrate_field(field, spacing, basis, config, seed_mask, cancelled):
                 if len(before):
                     segments.append(np.stack((before, after) if sign > 0 else (after, before), axis=1))
                     speeds.append((start_speed[valid] + end_speed[valid]) * 0.5)
-                    owners.append(alive[valid].copy())
+                    if config.min_length_mm > 0:
+                        owners.append(alive[valid].copy())
                 alive = alive[valid]
                 points[alive] = after
+                current_units[alive] = end_unit[valid]
+                current_speeds[alive] = end_speed[valid]
         if segments:
             batch_segments = np.concatenate(segments).astype(np.float32)
             batch_speeds = np.concatenate(speeds).astype(np.float32)
@@ -329,8 +345,15 @@ def trace_planar_slices(
         values, offsets = [], [0]
         for index in range(shape[fixed]):
             _check_cancel(cancelled)
-            field = np.einsum("...c,dc->...d", np.take(world, index, axis=fixed), projector).astype(np.float32)
-            mask = None if seed_mask is None else np.take(seed_mask, index, axis=fixed)
+            selection = [slice(None)] * 3
+            selection[fixed] = index
+            selection = tuple(selection)
+            mask = None if seed_mask is None else seed_mask[selection]
+            if mask is not None and not np.any(mask):
+                values.append(np.empty((0, 5), dtype=np.float32))
+                offsets.append(offsets[-1])
+                continue
+            field = np.einsum("...c,dc->...d", world[selection], projector).astype(np.float32)
             segments, speeds = _integrate_field(field, spacing[[h, v]], basis,
                                                 planar_config, mask, cancelled)
             rows = np.column_stack((segments.reshape(-1, 4), speeds)).astype(np.float32)
@@ -383,12 +406,3 @@ def project_all_slices(
         result[plane] = SliceSegments(np.concatenate(values), np.asarray(offsets, dtype=np.int64))
     world = segments @ np.asarray(direction, dtype=float).T + np.asarray(origin, dtype=float)
     return StreamlineFrame(world.astype(np.float32), speeds, result)
-
-
-def speed_rgb(fractions: np.ndarray) -> np.ndarray:
-    """Shared blue/cyan/yellow/red speed scale for 2D and VTK."""
-    stops = np.array([[35, 65, 210], [0, 195, 235], [60, 220, 110],
-                      [250, 225, 40], [235, 45, 30]], dtype=float)
-    x = np.clip(np.asarray(fractions), 0, 1) * (len(stops) - 1)
-    lo = np.minimum(x.astype(int), len(stops) - 2)
-    return np.rint(stops[lo] + (x - lo)[..., None] * (stops[lo + 1] - stops[lo])).astype(np.uint8)

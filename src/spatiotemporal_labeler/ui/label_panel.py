@@ -21,9 +21,12 @@ from PySide6.QtWidgets import (
 
 from spatiotemporal_labeler.i18n import translate
 from spatiotemporal_labeler.model import LabelDefinition
+from .icons import tool_icon
 
 
 THRESHOLD_MASK_ITEM = "threshold_mask"
+STREAMLINE_ITEM = "streamlines"
+DISPLAY_ITEMS = {THRESHOLD_MASK_ITEM, STREAMLINE_ITEM}
 OPACITY_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 THRESHOLD_MASK_COLOR = (35, 210, 190)
 
@@ -39,6 +42,8 @@ class LabelPanel(QWidget):
     thresholdVisibilityChanged = Signal(bool)
     thresholdDeleteRequested = Signal()
     thresholdOpacityChanged = Signal(float)
+    streamlineVisibilityChanged = Signal(bool)
+    streamlineOpacityChanged = Signal(float)
     globalOpacityChanged = Signal(float)
 
     def __init__(self, parent: Any = None) -> None:
@@ -117,6 +122,9 @@ class LabelPanel(QWidget):
         threshold_present: bool = False,
         threshold_visible: bool = True,
         threshold_opacity: float = 1.0,
+        streamline_present: bool = False,
+        streamline_visible: bool = True,
+        streamline_opacity: float = 0.9,
     ) -> None:
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
@@ -159,24 +167,49 @@ class LabelPanel(QWidget):
             swatch.fill(QColor(*THRESHOLD_MASK_COLOR))
             item.setIcon(QIcon(swatch))
             self.list_widget.addItem(item)
+        if streamline_present:
+            self.set_streamline_display(True, streamline_visible, streamline_opacity)
         if selected_item is None and self.list_widget.count():
             selected_item = self.list_widget.item(0)
         self.list_widget.setCurrentItem(selected_item)
         self.list_widget.blockSignals(False)
-        if selected_item is not None:
+        if selected_item is not None and selected_item.data(Qt.ItemDataRole.UserRole) not in DISPLAY_ITEMS:
             self.labelSelected.emit(int(selected_item.data(Qt.ItemDataRole.UserRole)))
+
+    def set_streamline_display(self, present: bool, visible: bool = True, opacity: float = 0.9) -> None:
+        """Update the non-voxel overlay row without invalidating an open menu."""
+        blocked = self.list_widget.blockSignals(True)
+        try:
+            item = next((self.list_widget.item(row) for row in range(self.list_widget.count())
+                         if self.list_widget.item(row).data(Qt.ItemDataRole.UserRole) == STREAMLINE_ITEM), None)
+            if not present:
+                if item is not None:
+                    self.list_widget.takeItem(self.list_widget.row(item))
+                return
+            if item is None:
+                item = QListWidgetItem("Streamlines")
+                item.setData(Qt.ItemDataRole.UserRole, STREAMLINE_ITEM)
+                item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                              & ~Qt.ItemFlag.ItemIsSelectable)
+                item.setIcon(tool_icon("streamlines", "#287f9c"))
+                item.setToolTip("Display overlay only; never saved in a label sequence. Right-click for opacity.")
+                self.list_widget.addItem(item)
+            item.setData(OPACITY_ROLE, float(opacity))
+            item.setCheckState(Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
+        finally:
+            self.list_widget.blockSignals(blocked)
 
     def _selection_changed(self, current: QListWidgetItem | None, _previous: Any) -> None:
         if current is not None:
             value = current.data(Qt.ItemDataRole.UserRole)
-            if value != THRESHOLD_MASK_ITEM:
+            if value not in DISPLAY_ITEMS:
                 self.labelSelected.emit(int(value))
 
     def select_label(self, value: int) -> bool:
         for row in range(self.list_widget.count()):
             item = self.list_widget.item(row)
             item_value = item.data(Qt.ItemDataRole.UserRole)
-            if item_value != THRESHOLD_MASK_ITEM and int(item_value) == value:
+            if item_value not in DISPLAY_ITEMS and int(item_value) == value:
                 self.list_widget.setCurrentItem(item)
                 return True
         return False
@@ -186,6 +219,8 @@ class LabelPanel(QWidget):
         visible = item.checkState() == Qt.CheckState.Checked
         if value == THRESHOLD_MASK_ITEM:
             self.thresholdVisibilityChanged.emit(visible)
+        elif value == STREAMLINE_ITEM:
+            self.streamlineVisibilityChanged.emit(visible)
         else:
             self.visibilityChanged.emit(int(value), visible)
 
@@ -195,12 +230,14 @@ class LabelPanel(QWidget):
             value = item.data(Qt.ItemDataRole.UserRole)
             if value == THRESHOLD_MASK_ITEM:
                 self.thresholdDeleteRequested.emit()
+            elif value == STREAMLINE_ITEM:
+                item.setCheckState(Qt.CheckState.Unchecked)
             else:
                 self.deleteRequested.emit(int(value))
 
     def _color_requested(self, item: QListWidgetItem) -> None:
         value = item.data(Qt.ItemDataRole.UserRole)
-        if value != THRESHOLD_MASK_ITEM:
+        if value not in DISPLAY_ITEMS:
             self.colorRequested.emit(int(value))
 
     def set_global_opacity(self, opacity: float) -> None:
@@ -216,7 +253,7 @@ class LabelPanel(QWidget):
         value = item.data(Qt.ItemDataRole.UserRole)
         opacity = float(item.data(OPACITY_ROLE) or 0.0)
         menu = QMenu(self)
-        if value != THRESHOLD_MASK_ITEM:
+        if value not in DISPLAY_ITEMS:
             rename_action = menu.addAction(translate(self.language, "rename_label"))
             rename_action.triggered.connect(
                 lambda: self.renameRequested.emit(int(value))
@@ -233,13 +270,17 @@ class LabelPanel(QWidget):
         slider.setMinimumWidth(150)
 
         def opacity_changed(percent: int) -> None:
+            blocked = self.list_widget.blockSignals(True)
             item.setData(OPACITY_ROLE, percent / 100.0)
+            self.list_widget.blockSignals(blocked)
             label.setText(
                 ("透明度" if self.language == "zh_CN" else "Opacity")
                 + f"  {percent}%"
             )
             if value == THRESHOLD_MASK_ITEM:
                 self.thresholdOpacityChanged.emit(percent / 100.0)
+            elif value == STREAMLINE_ITEM:
+                self.streamlineOpacityChanged.emit(percent / 100.0)
             else:
                 self.opacityChanged.emit(int(value), percent / 100.0)
 

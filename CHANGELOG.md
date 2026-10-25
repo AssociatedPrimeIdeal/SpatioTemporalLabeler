@@ -6,7 +6,18 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added selectable Flow, Turbo, Viridis, Plasma, Inferno, Magma and Grayscale colormaps shared by 2D and 3D streamlines, with a live color legend.
+- Added a display-only Streamlines entry in the label list with visibility and right-click opacity, synchronized with the streamline panel without changing label voxels or saved label definitions.
+
 ### Changed
+
+- Streamline controls now hide complete inactive rows, including Random counts/seeds, optional Grid caps, unused 2D controls, and mask-only settings. Random counts and Grid caps retain independent values.
+- New streamline configurations use 200 steps per direction and a calibrated stop speed of 1 cm/s, matching autoflow; saved user parameters are retained.
+
+### Performance
+
+- Reused accepted endpoint samples, removed repeated interpolation-buffer setup, skipped empty masked planar slices and reduced lossless NPZ compression overhead. On the 18-frame site sample with fixed parameters, full computation/cache writing decreased from 69.37 s to 39.82 s; all 288 stored numeric arrays were bitwise identical.
+- Streamline opacity updates now reuse cached 2D pictures instead of repainting their geometry.
 
 ### Fixed
 

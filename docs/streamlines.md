@@ -3,7 +3,7 @@
 Open **View > Streamlines** or the toolbar **Streamlines** button. Enable overlays
 and select three loaded scalar image sequences. The panel is organized into
 **Inputs**, **Seeds**, **Trace**, **2D**, and **Display** tabs, with computation
-status and cache actions always visible below. Each parameter has an English tooltip. The interface is English only; legacy language settings migrate automatically.
+status and cache actions always visible below. Only parameters active for the current choices are shown; values are retained while hidden. Each parameter has an English tooltip. The interface is English only; legacy language settings migrate automatically.
 
 ## Inputs
 
@@ -30,8 +30,9 @@ mode, and cm/s in calibrated modes. The module does not unwrap aliased phase.
 | Grid interval unit | Voxel multiples preserve anisotropic resolution. Millimeters use the same physical interval along every axis. |
 | Grid interval | Default **3 voxel widths**: pitches are 3*dx, 3*dy, 3*dz. The lattice is anchored to the input grid with a half-cell offset. Smaller intervals produce more seeds. |
 | Cap Grid seed count | Off by default: use every eligible lattice point. Enable only when a separate count cap is desired. |
-| 3D seed count / cap | Requested Random seeds per 3D frame; an optional cap for Grid. The UI accepts up to 1,000,000, and the integrator processes bounded batches rather than silently limiting to 1,000/2,000. |
-| Random seed | Reproduces a Random seed selection; ignored by Grid. |
+| Random seeds / 3D frame | Requested Random seeds per 3D frame, shown only in Random mode. The UI accepts up to 1,000,000; the integrator uses bounded batches. |
+| 3D Grid seed cap | A separate count limit shown only when Grid and Cap Grid seed count are enabled. Hidden caps have no effect. |
+| Random seed | Reproduces a Random seed selection; shown only for Random. |
 | Seed minimum speed | Excludes low-speed seed candidates. Effective eligibility uses the greater of this value and the integration stop threshold. |
 
 Grid seeds retain their regular pitch and are filtered by mask and magnitude.
@@ -64,8 +65,7 @@ and on return near a seed after a closed loop.
 | In-plane 2D streamlines | Project the velocity onto each slice's tangent basis, discard its normal component, and integrate that slice independently. It never follows trajectories into neighboring slices. | In-plane magnitude only; through-plane velocity cannot create a spurious planar trace. |
 | 3D streamline slab projection | Compute actual 3D trajectories, clip their segments to a physical slab centered on each slice, and project the retained portions into the slice view. | Full 3D magnitude. |
 
-**2D seeds / slice / cap** is the Random count (or optional Grid cap) for each
-individual planar slice, independent of the 3D seed count. Grid interval and
+**Random seeds / 2D slice** and **2D Grid cap / slice** are separate settings. Only the active one appears, and a Grid cap appears only when explicitly enabled. Both are independent of the 3D-frame counts. Grid interval and
 mask constraints apply to both modes. **Slab thickness** applies only to 3D
 projection; zero means one voxel along the slice's fixed axis.
 
@@ -81,7 +81,8 @@ to display full 3D trajectories independently of the chosen 2D algorithm.
 | --- | --- |
 | Show 2D / Show 3D | Independent visibility toggles; the existing 3D pane Show toggle still gates rendering. |
 | 2D arrowheads | Direction markers following the input flow. |
-| Width / opacity | Streamline appearance only. Label surface opacity uses the existing 3D header slider. |
+| Width / opacity | Streamline appearance only. Opacity is synchronized with the label-list Streamlines row. |
+| Colormap | Flow (original palette), Turbo, Viridis, Plasma, Inferno, Magma, or Grayscale; the same palette is used in 2D and 3D without recomputation. |
 | Ignore below speed | Hides cached segments below the cutoff in 2D and 3D without repeating or stopping integration. In-plane overlays use their in-plane magnitude. |
 | Color maximum | Upper end of the color scale; higher values saturate at red and remain visible. |
 | Recalculate | Bypasses saved results and recomputes the selected configuration. |
@@ -104,3 +105,17 @@ parameters. Files are atomically written without pickle; corrupt entries are
 recomputed and older disk entries are pruned to a 2 GiB budget. Closing files
 cancels work and releases current geometry while retaining reusable disk data.
 Images and labels are never altered by streamline calculation.
+
+## Display-only label-list entry
+
+While streamline overlays are enabled, **Streamlines** appears alongside integer
+labels. Its checkbox changes visibility; right-click the row to adjust opacity.
+The row is not a paint target or a `LabelDefinition`, never writes voxel values,
+and is not serialized in a saved label sequence. The panel opacity and row
+opacity are synchronized. Effective line opacity multiplies that value by
+**All labels opacity**; the 3D header opacity still affects label surfaces only.
+Holding the label-hide key also temporarily hides 2D streamline overlays.
+
+Changing visibility, opacity, colormap, color limits or display speed filtering
+uses the existing geometry. See [performance and default-parameter evidence](streamline-performance-2026-10-26.md)
+for measured speedups, numerical equivalence and the rationale/limits of defaults.

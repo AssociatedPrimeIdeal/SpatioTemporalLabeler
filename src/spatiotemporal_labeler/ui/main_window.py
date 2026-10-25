@@ -266,6 +266,7 @@ class MainWindow(QMainWindow):
         self._copied_frame_label_value: int | None = None
         self.streamlines = StreamlineController(self)
         self._streamline_dirty = True
+        self._streamline_visible = str(self.settings.value("streamlines/visible", True)).lower() not in {"false", "0"}
         self._streamline_mask_revision = 0
         self._streamline_timer = QTimer(self)
         self._streamline_timer.setSingleShot(True)
@@ -327,6 +328,8 @@ class MainWindow(QMainWindow):
             self._threshold_opacity_changed
         )
         self.label_panel.globalOpacityChanged.connect(self._global_opacity_changed)
+        self.label_panel.streamlineVisibilityChanged.connect(self._streamline_visibility_changed)
+        self.label_panel.streamlineOpacityChanged.connect(self._streamline_opacity_changed)
         self.label_panel.set_global_opacity(self._global_label_opacity)
         splitter.addWidget(self.label_panel)
 
@@ -1699,6 +1702,9 @@ class MainWindow(QMainWindow):
             threshold_present=threshold_present,
             threshold_visible=self._applied_threshold_visible,
             threshold_opacity=self._applied_threshold_opacity,
+            streamline_present=self.streamline_panel.enabled.isChecked(),
+            streamline_visible=self._streamline_visible,
+            streamline_opacity=self.streamline_panel.opacity.value(),
         )
         self.lasso_panel.set_labels(definitions, self.active_label_value)
 
@@ -2472,6 +2478,7 @@ class MainWindow(QMainWindow):
         self._global_label_opacity = float(np.clip(opacity, 0.0, 1.0))
         self.settings.setValue("labels/global_opacity", self._global_label_opacity)
         self._refresh_label_overlays()
+        self._refresh_streamline_overlays()
         self.viewer_3d.set_label_styles(
             self.active_labels, self._global_label_opacity
         )
@@ -2735,6 +2742,15 @@ class MainWindow(QMainWindow):
         if self._maximized_plane is None:
             self._update_image_previews()
 
+    def _streamline_visibility_changed(self, visible: bool) -> None:
+        self._streamline_visible = bool(visible)
+        self.settings.setValue("streamlines/visible", self._streamline_visible)
+        self._refresh_streamline_overlays()
+
+    def _streamline_opacity_changed(self, opacity: float) -> None:
+        self.streamline_panel.opacity.set_value(float(np.clip(opacity, 0.0, 1.0)))
+        self.streamline_panel._display_changed()
+
     def _streamline_mode_changed(self) -> None:
         panel = self.streamline_panel
         if (panel.enabled.isChecked() and panel.mode_2d.currentData() == "planar"
@@ -2787,7 +2803,11 @@ class MainWindow(QMainWindow):
     def _refresh_streamline_overlays(self) -> None:
         panel = self.streamline_panel
         reference, image = self.streamlines.reference, self.active_image
-        enabled = panel.enabled.isChecked() and not self._streamline_dirty
+        present = panel.enabled.isChecked()
+        self.label_panel.set_streamline_display(present, self._streamline_visible, panel.opacity.value())
+        self.label_panel.setEnabled(self.active_mask is not None or present)
+        self.label_panel.add_button.setEnabled(self.active_mask is not None)
+        enabled = present and self._streamline_visible and not self._streamline_dirty
         compatible = (enabled and reference is not None and image is not None
                       and reference.spatially_compatible_with(image)
                       and (self.streamlines.frame_count == 1
@@ -2795,10 +2815,12 @@ class MainWindow(QMainWindow):
         index = min(self.cursor[3], max(0, self.streamlines.frame_count - 1))
         frame = self.streamlines.frames.get(index) if compatible else None
         style = panel.display_style()
+        style["opacity"] *= self._global_label_opacity
         planar_mode = panel.mode_2d.currentData() == "planar"
         slice_sets = (frame.planar_slices if planar_mode else frame.slices) if frame is not None else None
         for plane, view in self.slice_views.items():
-            visible = slice_sets is not None and panel.show_2d.isChecked()
+            visible = (slice_sets is not None and panel.show_2d.isChecked()
+                       and not self._labels_hidden_held)
             view.streamline_overlay.setVisible(visible)
             if visible:
                 fixed = PLANE_AXES[plane][2]
@@ -2812,7 +2834,7 @@ class MainWindow(QMainWindow):
                 frame, key=(self.streamlines.signature, index), scene_key=id(reference),
                 scene_bounds=self._mask_scene_bounds(reference),
                 width=style["width"], opacity=style["opacity"], speed_max=style["speed_max"],
-                speed_unit=panel.speed_unit(), min_speed=style["min_speed"],
+                speed_unit=panel.speed_unit(), min_speed=style["min_speed"], colormap=style["colormap"],
             )
         else:
             self.viewer_3d.set_streamlines(None)
@@ -4353,6 +4375,7 @@ class MainWindow(QMainWindow):
         for view in [*self.slice_views.values(), self.temporal_view]:
             view.set_label_overlays_visible(not enabled)
         self.image_previews.set_label_overlays_visible(not enabled)
+        self._refresh_streamline_overlays()
 
     def _brush_settings_changed(self, _value: object = None) -> None:
         if not hasattr(self, "brush_shape"):
@@ -4510,7 +4533,8 @@ class MainWindow(QMainWindow):
         )
         self.undo_action.setEnabled(bool(self._undo_stack))
         self.redo_action.setEnabled(bool(self._redo_stack))
-        self.label_panel.setEnabled(has_mask)
+        self.label_panel.setEnabled(has_mask or self.streamline_panel.enabled.isChecked())
+        self.label_panel.add_button.setEnabled(has_mask)
         self.all_frames_toggle.setEnabled(has_mask)
         self.threshold_bypass_toggle.setEnabled(has_mask)
         self.all_frames_bypass_toggle.setEnabled(has_mask)

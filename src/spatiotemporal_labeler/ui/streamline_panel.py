@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import numpy as np
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from spatiotemporal_labeler.i18n import translate
 from spatiotemporal_labeler.tools.streamlines import PlanarConfig, StreamlineConfig
+from spatiotemporal_labeler.tools.streamline_colors import COLORMAPS, speed_rgb
 from .value_slider import FloatSliderSpin
 
 
@@ -81,10 +83,12 @@ class StreamlinePanel(QWidget):
         self.mask_labels = QLineEdit(str(settings.value("streamlines/mask_labels", "")))
         self._row("stream_mask_labels", self.mask_labels, "stream_help_mask_labels")
         self.constrain_mask = self._check("stream_constrain_mask", "constrain_mask", False, "stream_help_constrain_mask")
-        self.seed_count = self._integer("stream_seeds", "seeds", 1, 1000000, 300, "stream_help_seeds")
         self.distribution = self._choice("stream_distribution", "distribution", "grid", (
             ("random", "stream_random"), ("grid", "stream_grid")), "stream_help_distribution")
+        self.seed_count = self._integer("stream_seeds", "seeds", 1, 1000000, 300, "stream_help_seeds")
         self.limit_grid = self._check("stream_limit_grid", "limit_grid", False, "stream_help_limit_grid")
+        self.grid_seed_cap = self._integer("stream_grid_seed_cap", "grid_seed_cap", 1, 1000000,
+                                           int(settings.value("streamlines/seeds", 300)), "stream_help_limit_grid")
         self.grid_units = self._choice("stream_grid_units", "grid_units", "voxel", (
             ("voxel", "stream_grid_voxel"), ("mm", "stream_grid_mm")), "stream_help_grid_units")
         self.grid_spacing = self._slider("stream_grid_spacing", "grid_interval", 0.1, 50, 3, 2, "stream_help_grid_spacing")
@@ -97,10 +101,11 @@ class StreamlinePanel(QWidget):
         self.integrator = self._choice("stream_integrator", "integrator", "midpoint", (
             ("midpoint", "stream_midpoint"), ("rk4", "stream_rk4")), "stream_help_integrator")
         self.step = self._slider("stream_step", "step", 0.01, 10, 1, 2, "stream_help_step")
-        self.max_steps = self._integer("stream_steps", "steps", 1, 1000000, 160, "stream_help_steps")
+        self.max_steps = self._integer("stream_steps", "steps", 1, 1000000, 200, "stream_help_steps")
         self.length = self._slider("stream_length", "length", 0.1, 2000, 200, 1, "stream_help_length")
         self.min_length = self._slider("stream_min_length", "min_length", 0, 500, 0, 1, "stream_help_min_length")
-        self.min_speed = self._slider("stream_min_speed", "min_speed", 0, 300, 0.1, 3, "stream_help_min_speed")
+        self.min_speed = self._slider("stream_min_speed", "min_speed", 0, 300,
+                                      0.1 if self.units.currentIndex() == 0 else 1, 3, "stream_help_min_speed")
         self.max_turn = self._slider("stream_max_turn", "max_turn", 1, 180, 180, 1, "stream_help_max_turn")
 
         self._page("stream_tab_2d")
@@ -111,6 +116,8 @@ class StreamlinePanel(QWidget):
         self.mode_hint.setWordWrap(True)
         self._current_form.addRow(self.mode_hint)
         self.planar_seeds = self._integer("stream_planar_seeds", "planar_seeds", 1, 1000000, 40, "stream_help_planar_seeds")
+        self.planar_grid_cap = self._integer("stream_planar_grid_cap", "planar_grid_cap", 1, 1000000,
+                                             int(settings.value("streamlines/planar_seeds", 40)), "stream_help_planar_seeds")
         self.slab = self._slider("stream_slab", "slab", 0, 100, 0, 2, "stream_help_slab")
         self.slab.spin.setSpecialValueText("Auto")
 
@@ -120,7 +127,14 @@ class StreamlinePanel(QWidget):
         self.width = self._slider("stream_width", "width", 0.5, 8, 1.5, 1, "stream_help_width")
         self.opacity = self._slider("stream_opacity", "opacity", 0, 1, 0.9, 2, "stream_help_opacity")
         self.display_min_speed = self._slider("stream_display_min_speed", "display_min_speed", 0, 300, 0, 3, "stream_help_display_min_speed")
-        self.speed_max = self._slider("stream_speed_max", "speed_max", 0.01, 1000, 1, 2, "stream_help_speed_max")
+        self.speed_max = self._slider("stream_speed_max", "speed_max", 0.01, 1000,
+                                      1 if self.units.currentIndex() == 0 else 100, 2, "stream_help_speed_max")
+        self.colormap = self._choice("stream_colormap", "colormap", "flow", tuple(
+            (name, "stream_cmap_" + name) for name in COLORMAPS), "stream_help_colormap")
+        self.color_bar = QLabel()
+        self.color_bar.setScaledContents(True)
+        self.color_bar.setFixedHeight(12)
+        self._current_form.addRow(self.color_bar)
         self.scale_hint = QLabel()
         self.scale_hint.setWordWrap(True)
         self._current_form.addRow(self.scale_hint)
@@ -146,7 +160,7 @@ class StreamlinePanel(QWidget):
         self.seed_mask.currentIndexChanged.connect(self._mask_changed)
         self.mask_labels.editingFinished.connect(self._computation_changed)
         display_widgets = {self.show_2d, self.show_3d, self.arrows, self.width, self.opacity,
-                           self.display_min_speed, self.speed_max}
+                           self.display_min_speed, self.speed_max, self.colormap}
         for widget in self._saved.values():
             if widget is self.mode_2d:
                 continue
@@ -158,6 +172,7 @@ class StreamlinePanel(QWidget):
         self.grid_units.currentIndexChanged.connect(self._update_mode_controls)
         self.mode_2d.currentIndexChanged.connect(self._update_mode_controls)
         self.mode_2d.currentIndexChanged.connect(self._mode_changed)
+        self.show_2d.toggled.connect(self._update_mode_controls)
         self.recalculate.clicked.connect(self.recalculateRequested)
         self.clear.clicked.connect(self.clearRequested)
         self._update_unit_controls()
@@ -306,7 +321,8 @@ class StreamlinePanel(QWidget):
     def config(self):
         return StreamlineConfig(
             directions=tuple(combo.currentData() for combo in self.directions),
-            seed_count=self.seed_count.value(), step_mm=self.step.value(),
+            seed_count=(self.grid_seed_cap.value() if self.distribution.currentData() == "grid"
+                        else self.seed_count.value()), step_mm=self.step.value(),
             max_steps=self.max_steps.value(), max_length_mm=self.length.value(),
             min_speed=self.min_speed.value(), source_scale=100.0 if self.units.currentIndex() == 2 else 1.0,
             component_scales=(tuple(spin.value() / np.pi for spin in self.venc)
@@ -317,15 +333,18 @@ class StreamlinePanel(QWidget):
             limit_grid_seeds=self.limit_grid.isChecked(),
             integration_direction=self.integration_direction.currentData(), integrator=self.integrator.currentData(),
             min_length_mm=self.min_length.value(), max_turn_degrees=self.max_turn.value(),
-            constrain_to_mask=self.constrain_mask.isChecked(),
+            constrain_to_mask=self.constrain_mask.isChecked() and self.selected_mask() is not None,
         )
 
     def planar_config(self):
-        return PlanarConfig(self.mode_2d.currentData() == "planar", self.planar_seeds.value())
+        count = (self.planar_grid_cap.value() if self.distribution.currentData() == "grid"
+                 else self.planar_seeds.value())
+        return PlanarConfig(self.mode_2d.currentData() == "planar", count)
 
     def display_style(self):
         return dict(width=self.width.value(), opacity=self.opacity.value(), speed_max=self.speed_max.value(),
-                    min_speed=self.display_min_speed.value(), arrows=self.arrows.isChecked())
+                    min_speed=self.display_min_speed.value(), arrows=self.arrows.isChecked(),
+                    colormap=self.colormap.currentData())
 
     def set_progress(self, done, total, message=""):
         self._progress = (done, total, message)
@@ -336,7 +355,10 @@ class StreamlinePanel(QWidget):
         return translate(self.language, "stream_source_units") if self.units.currentIndex() == 0 else "cm/s"
 
     def _update_scale_hint(self):
-        self.scale_hint.setText(translate(self.language, "stream_scale", value=f"{self.speed_max.value():g}", unit=self.speed_unit()))
+        self.scale_hint.setText(f"{self.colormap.currentText()}: 0 – {self.speed_max.value():g} {self.speed_unit()}")
+        colors = speed_rgb(np.linspace(0, 1, 256), self.colormap.currentData())
+        bar = QImage(colors.tobytes(), 256, 1, 256 * 3, QImage.Format.Format_RGB888).copy()
+        self.color_bar.setPixmap(QPixmap.fromImage(bar))
 
     def _update_unit_controls(self):
         native = self.units.currentIndex() == 0
@@ -349,7 +371,7 @@ class StreamlinePanel(QWidget):
 
     def _units_changed(self, *_args):
         self._update_unit_controls()
-        self.min_speed.set_value(0.1 if self.units.currentIndex() == 0 else 5)
+        self.min_speed.set_value(0.1 if self.units.currentIndex() == 0 else 1)
         self.seed_min_speed.set_value(0)
         self.display_min_speed.set_value(0)
         self.speed_max.set_value(1 if self.units.currentIndex() == 0 else 100)
@@ -358,20 +380,27 @@ class StreamlinePanel(QWidget):
 
     def _update_mode_controls(self, *_args):
         planar = self.mode_2d.currentData() == "planar"
-        self.planar_seeds.setEnabled(planar)
-        self.slab.setEnabled(not planar)
-        self.grid_spacing.setEnabled(self.distribution.currentData() == "grid")
-        self.grid_units.setEnabled(self.distribution.currentData() == "grid")
-        self.limit_grid.setEnabled(self.distribution.currentData() == "grid")
-        self.seed_count.setEnabled(self.distribution.currentData() == "random" or self.limit_grid.isChecked())
-        self.planar_seeds.setEnabled(planar and (self.distribution.currentData() == "random" or self.limit_grid.isChecked()))
-        self.rng_seed.setEnabled(self.distribution.currentData() == "random")
+        grid = self.distribution.currentData() == "grid"
+        capped = grid and self.limit_grid.isChecked()
+        show_2d = self.show_2d.isChecked()
+        has_mask = self.selected_mask() is not None
+        visibility = {
+            "stream_seeds": not grid, "stream_rng": not grid,
+            "stream_limit_grid": grid, "stream_grid_seed_cap": capped,
+            "stream_grid_units": grid, "stream_grid_spacing": grid,
+            "stream_mask_labels": has_mask, "stream_constrain_mask": has_mask,
+            "stream_mode_2d": show_2d,
+            "stream_planar_seeds": show_2d and planar and not grid,
+            "stream_planar_grid_cap": show_2d and planar and capped,
+            "stream_slab": show_2d and not planar,
+        }
+        for key, visible in visibility.items():
+            form, _widget = self._rows[key]
+            form.setRowVisible(self.labels[key], visible)
+        self.mode_hint.setVisible(show_2d)
         self.labels["stream_grid_spacing"].setText(translate(
             self.language, "stream_grid_interval_voxel" if self.grid_units.currentData() == "voxel"
             else "stream_grid_interval_mm"))
-        has_mask = self.selected_mask() is not None
-        self.mask_labels.setEnabled(has_mask)
-        self.constrain_mask.setEnabled(has_mask)
         self.mode_hint.setText(translate(self.language, "stream_planar_hint" if planar else "stream_projection_hint"))
 
     def set_language(self, language):

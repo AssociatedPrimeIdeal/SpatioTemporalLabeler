@@ -287,6 +287,7 @@ class Mask3DViewer(QWidget):
         self._streamline_actor = None
         self._streamline_key = None
         self._streamline_scene_key = None
+        self._streamline_colormap = None
         self.renderer.SetLayer(0)
         self.renderer.SetBackground(0.025, 0.040, 0.044)
         self.renderer.SetBackground2(0.075, 0.100, 0.105)
@@ -958,7 +959,8 @@ class Mask3DViewer(QWidget):
     def set_streamlines(
         self, frame=None, *, key=None, scene_key=None, scene_bounds=None,
         width: float = 1.5, opacity: float = 0.9, speed_max: float = 100.0,
-        speed_unit: str = "cm/s", min_speed: float = 0.0, render: bool = True,
+        speed_unit: str = "cm/s", min_speed: float = 0.0, colormap: str = "flow",
+        render: bool = True,
     ) -> None:
         """Swap cached world-space line geometry independently of label meshes."""
         if frame is None:
@@ -968,6 +970,7 @@ class Mask3DViewer(QWidget):
             self._streamline_actor = None
             self._streamline_key = None
             self._streamline_scene_key = None
+            self._streamline_colormap = None
             if self._surface_state is None:
                 self._has_camera = False
         else:
@@ -996,12 +999,14 @@ class Mask3DViewer(QWidget):
                 mapper.SetInputData(poly)
                 mapper.SetScalarModeToUseCellData()
                 mapper.ScalarVisibilityOn()
+                self._streamline_key = geometry_key
+            if self._streamline_colormap != colormap:
                 lut = vtkLookupTable()
                 lut.SetNumberOfTableValues(256)
-                for index, color in enumerate(speed_rgb(np.linspace(0, 1, 256))):
+                for index, color in enumerate(speed_rgb(np.linspace(0, 1, 256), colormap)):
                     lut.SetTableValue(index, *map(float, color / 255.0), 1.0)
                 mapper.SetLookupTable(lut)
-                self._streamline_key = geometry_key
+                self._streamline_colormap = colormap
             mapper.GetInput().GetCellData().GetScalars().SetName(f"Streamline magnitude ({speed_unit})")
             mapper.SetScalarRange(0.0, max(float(speed_max), 1e-6))
             self._streamline_actor.GetProperty().SetLineWidth(width)

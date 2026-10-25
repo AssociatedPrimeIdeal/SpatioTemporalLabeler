@@ -12,7 +12,7 @@ from queue import Empty, Queue
 import tempfile
 from threading import Event
 import weakref
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile, ZIP_DEFLATED
 from zlib import error as ZlibError
 
 import numpy as np
@@ -56,7 +56,12 @@ def _atomic_save(path: Path, **arrays) -> None:
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as stream:
             temporary = Path(stream.name)
-            np.savez_compressed(stream, **arrays)
+            # Level 1 keeps NPZ interoperability while reducing background
+            # cache-write latency; the result arrays themselves are lossless.
+            with ZipFile(stream, "w", compression=ZIP_DEFLATED, compresslevel=1) as archive:
+                for name, values in arrays.items():
+                    with archive.open(name + ".npy", "w", force_zip64=True) as member:
+                        np.lib.format.write_array(member, np.asanyarray(values), allow_pickle=False)
         os.replace(temporary, path)
     finally:
         if temporary is not None:
