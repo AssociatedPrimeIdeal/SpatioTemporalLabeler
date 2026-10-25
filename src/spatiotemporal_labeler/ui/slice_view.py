@@ -19,6 +19,7 @@ from spatiotemporal_labeler.model import LabelDefinition, default_label
 from .frame_labels import PHASE_LABEL_COLORS
 from .image_item import DisplayImageItem
 from .orientation_settings import OrientationSettings
+from .streamline_overlay import StreamlineOverlay
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -469,6 +470,7 @@ class SliceView(pg.PlotWidget):
         self.addItem(self.crosshair_vertical)
         self.addItem(self.crosshair_horizontal)
         self.lasso_overlay = LassoOverlay(self)
+        self.streamline_overlay = StreamlineOverlay(self)
         view_box = self.getViewBox()
         self._locator_handles = (
             (
@@ -589,6 +591,7 @@ class SliceView(pg.PlotWidget):
         self.footprint.configure(diameter_mm, shape, tool)
 
     def clear_view(self) -> None:
+        self.streamline_overlay.clear()
         for item in (
             self.image_item,
             self.threshold_item,

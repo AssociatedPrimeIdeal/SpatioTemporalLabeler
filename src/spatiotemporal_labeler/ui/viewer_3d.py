@@ -22,8 +22,8 @@ from skimage.draw import polygon as rasterize_polygon
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401 - registers the OpenGL render backend
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from vtkmodules.util.numpy_support import numpy_to_vtk
-from vtkmodules.vtkCommonCore import VTK_INT, vtkPoints
+from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
+from vtkmodules.vtkCommonCore import VTK_INT, vtkLookupTable, vtkPoints
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import (
@@ -47,6 +47,7 @@ from vtkmodules.vtkRenderingCore import (
 )
 
 from spatiotemporal_labeler.model import LabelDefinition, default_label
+from spatiotemporal_labeler.tools.streamlines import speed_rgb
 
 from .render_settings import DETAIL_REDUCTION, RenderSettings
 from .orientation_settings import ANATOMICAL_VECTORS, OrientationSettings
@@ -283,6 +284,9 @@ class Mask3DViewer(QWidget):
         render_window.GetInteractor().SetInteractorStyle(self.interaction_style)
 
         self.renderer = vtkRenderer()
+        self._streamline_actor = None
+        self._streamline_key = None
+        self._streamline_scene_key = None
         self.renderer.SetLayer(0)
         self.renderer.SetBackground(0.025, 0.040, 0.044)
         self.renderer.SetBackground2(0.075, 0.100, 0.105)
@@ -580,6 +584,7 @@ class Mask3DViewer(QWidget):
         self._active_request = None
         self._tasks.clear()
         self._clear_segment_pipelines()
+        self.set_streamlines(None, render=False)
         super().closeEvent(event)
 
     def _clear_segment_pipelines(self) -> None:
@@ -925,6 +930,8 @@ class Mask3DViewer(QWidget):
         if enabled == self._rendering_enabled:
             return
         self._rendering_enabled = enabled
+        if self._streamline_actor is not None:
+            self._streamline_actor.SetVisibility(enabled)
         self._surface_generation += 1
         self._minimum_surface_generation = self._surface_generation
         self._timer.stop()
@@ -947,6 +954,65 @@ class Mask3DViewer(QWidget):
         if self._initialized:
             self.vtk_widget.GetRenderWindow().Render()
             self._last_cursor_render_time = monotonic()
+
+    def set_streamlines(
+        self, frame=None, *, key=None, scene_key=None, scene_bounds=None,
+        width: float = 1.5, opacity: float = 0.9, speed_max: float = 100.0,
+        speed_unit: str = "cm/s", render: bool = True,
+    ) -> None:
+        """Swap cached world-space line geometry independently of label meshes."""
+        if frame is None:
+            if self._streamline_actor is None:
+                return
+            self.renderer.RemoveActor(self._streamline_actor)
+            self._streamline_actor = None
+            self._streamline_key = None
+            self._streamline_scene_key = None
+            if self._surface_state is None:
+                self._has_camera = False
+        else:
+            if self._streamline_actor is None:
+                self._streamline_actor = vtkActor()
+                self._streamline_actor.SetMapper(vtkPolyDataMapper())
+                self.renderer.AddActor(self._streamline_actor)
+            mapper = self._streamline_actor.GetMapper()
+            if self._streamline_key != key:
+                vertices = frame.world_segments.reshape(-1, 3)
+                points = vtkPoints()
+                points.SetData(numpy_to_vtk(np.ascontiguousarray(vertices), deep=True))
+                lines = vtkCellArray()
+                lines.SetData(
+                    numpy_to_vtkIdTypeArray(np.arange(0, len(vertices) + 1, 2, dtype=np.int64), deep=True),
+                    numpy_to_vtkIdTypeArray(np.arange(len(vertices), dtype=np.int64), deep=True),
+                )
+                poly = vtkPolyData()
+                poly.SetPoints(points)
+                poly.SetLines(lines)
+                scalars = numpy_to_vtk(np.ascontiguousarray(frame.speeds), deep=True)
+                scalars.SetName("Streamline speed (cm/s)")
+                poly.GetCellData().SetScalars(scalars)
+                mapper.SetInputData(poly)
+                mapper.SetScalarModeToUseCellData()
+                mapper.ScalarVisibilityOn()
+                lut = vtkLookupTable()
+                lut.SetNumberOfTableValues(256)
+                for index, color in enumerate(speed_rgb(np.linspace(0, 1, 256))):
+                    lut.SetTableValue(index, *map(float, color / 255.0), 1.0)
+                mapper.SetLookupTable(lut)
+                self._streamline_key = key
+            mapper.GetInput().GetCellData().GetScalars().SetName(f"Streamline magnitude ({speed_unit})")
+            mapper.SetScalarRange(0.0, max(float(speed_max), 1e-6))
+            self._streamline_actor.GetProperty().SetLineWidth(width)
+            self._streamline_actor.GetProperty().SetOpacity(opacity)
+            self._streamline_actor.GetProperty().LightingOff()
+            self._streamline_actor.SetVisibility(self._rendering_enabled)
+            if (self._surface_state is None and len(frame.speeds)
+                    and (not self._has_camera or self._streamline_scene_key != scene_key)):
+                self._frame_camera(scene_bounds)
+                self._has_camera = True
+            self._streamline_scene_key = scene_key
+        if render and self._initialized and self._rendering_enabled:
+            self._schedule_cursor_render()
 
     def set_cursor(
         self,
@@ -1003,8 +1069,9 @@ class Mask3DViewer(QWidget):
             self._pending = None
             self._surface_state = None
             self._rendered_cache_key = None
-            self._has_camera = False
-            self._camera_scene_key = None
+            if self._streamline_actor is None:
+                self._has_camera = False
+                self._camera_scene_key = None
             self._refine_timer.stop()
             self._refine_state = None
             self._display_definitions.clear()

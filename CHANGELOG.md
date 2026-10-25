@@ -6,6 +6,9 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added live 2D/3D streamline overlays with selectable velocity inputs and anatomical directions, cancelable all-frame background computation, cached projections for every spatial slice, and persistent content-checked disk caches. Defaults follow the Segdata HF/AP/RL component convention.
+- Streamline inputs retain source units by default and can be calibrated from cm/s, m/s, or phase radians with per-component VENC, accommodating the existing mixed preparation outputs.
+
 ### Changed
 
 ### Fixed

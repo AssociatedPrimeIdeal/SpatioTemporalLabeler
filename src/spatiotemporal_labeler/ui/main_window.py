@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QSlider,
+    QScrollArea,
     QSplitter,
     QSizePolicy,
     QToolBar,
@@ -100,6 +101,8 @@ from .slice_view import SliceView, TemporalView
 from .threshold_panel import ThresholdPanel
 from .viewer_3d import Mask3DViewer
 from .window_level_panel import WindowLevelPanel
+from .streamline_jobs import StreamlineController
+from .streamline_panel import StreamlinePanel
 
 
 PLANE_AXES = {"X-Y": (0, 1, 2), "X-Z": (0, 2, 1), "Y-Z": (1, 2, 0)}
@@ -261,7 +264,15 @@ class MainWindow(QMainWindow):
         if self._copied_frame_scope not in {"all", "active"}:
             self._copied_frame_scope = "all"
         self._copied_frame_label_value: int | None = None
+        self.streamlines = StreamlineController(self)
+        self._streamline_dirty = True
+        self._streamline_timer = QTimer(self)
+        self._streamline_timer.setSingleShot(True)
+        self._streamline_timer.setInterval(300)
+        self._streamline_timer.timeout.connect(self._compute_streamlines)
+        self.streamlines.framesChanged.connect(self._refresh_streamline_overlays)
         self._build_ui()
+        self.streamlines.progressChanged.connect(self.streamline_panel.set_progress)
         self._apply_orientation_settings(self.orientation_settings, render=False)
         self.viewer_3d.set_render_settings(self.render_settings, render=False)
         self._build_actions()
@@ -570,6 +581,30 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.morphology_dock, self.interpolation_dock)
         self.tabifyDockWidget(self.interpolation_dock, self.display_dock)
 
+        self.streamline_dock = QDockWidget(self)
+        self.streamline_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.streamline_panel = StreamlinePanel(self.settings)
+        self.streamline_panel.computationChanged.connect(self._streamline_parameters_changed)
+        self.streamline_panel.displayChanged.connect(self._refresh_streamline_overlays)
+        self.streamline_panel.recalculateRequested.connect(lambda: self._compute_streamlines(force=True))
+        self.streamline_panel.clearRequested.connect(self._clear_streamline_cache)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.streamline_panel)
+        self.streamline_dock.setWidget(scroll)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.streamline_dock)
+        self.tabifyDockWidget(self.display_dock, self.streamline_dock)
+        self.streamline_dock.hide()
+        self._streamline_dock_sized = False
+        def size_streamline_dock(visible: bool) -> None:
+            if visible and not self._streamline_dock_sized:
+                self._streamline_dock_sized = True
+                self.resizeDocks([self.streamline_dock], [360], Qt.Orientation.Horizontal)
+        self.streamline_dock.visibilityChanged.connect(size_streamline_dock)
+
+
     def _build_actions(self) -> None:
         self.toolbar = QToolBar()
         self.toolbar.setMovable(False)
@@ -714,6 +749,12 @@ class MainWindow(QMainWindow):
         self.display_button.setDefaultAction(self.display_action)
         self.display_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.toolbar.addWidget(self.display_button)
+        self.streamline_action = self.streamline_dock.toggleViewAction()
+        self.streamline_action.setIcon(tool_icon("grow", "#287f9c"))
+        self.streamline_button = QToolButton()
+        self.streamline_button.setDefaultAction(self.streamline_action)
+        self.streamline_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toolbar.addWidget(self.streamline_button)
         self.toolbar.addSeparator()
         self.diameter_label = QLabel()
         self.toolbar.addWidget(self.diameter_label)
@@ -767,6 +808,7 @@ class MainWindow(QMainWindow):
         self.view_menu.addAction(self.morphology_action)
         self.view_menu.addAction(self.interpolation_action)
         self.view_menu.addAction(self.display_action)
+        self.view_menu.addAction(self.streamline_action)
         self.language_menu = self.view_menu.addMenu("")
         language_group = QActionGroup(self)
         language_group.setExclusive(True)
@@ -959,6 +1001,9 @@ class MainWindow(QMainWindow):
         self.interpolation_action.setText(self._tr("interpolation"))
         self.display_dock.setWindowTitle(self._tr("display_dock"))
         self.display_action.setText(self._tr("display_dock"))
+        self.streamline_dock.setWindowTitle(self._tr("stream_dock"))
+        self.streamline_action.setText(self._tr("stream_dock"))
+        self.streamline_panel.set_language(self.language)
         self.file_menu.setTitle(self._tr("file"))
         self.edit_menu.setTitle(self._tr("edit"))
         self.view_menu.setTitle(self._tr("view"))
@@ -1720,6 +1765,7 @@ class MainWindow(QMainWindow):
         self.images.append(sequence)
         self.image_combo.addItem(sequence.display_name)
         self.image_combo.setCurrentIndex(len(self.images) - 1)
+        self.streamline_panel.set_sources(self.images)
         self.statusBar().showMessage(
             self._tr(
                 "loaded_image",
@@ -1849,7 +1895,13 @@ class MainWindow(QMainWindow):
         self.mask_combo.clear()
         self.image_combo.blockSignals(False)
         self.mask_combo.blockSignals(False)
+        self._streamline_timer.stop()
+        self.streamline_panel.enabled.setChecked(False)
+        self.streamlines.clear()
+        self._streamline_dirty = True
         self.images.clear()
+        self.streamline_panel.set_sources([])
+        self.viewer_3d.set_streamlines(None)
         self.masks.clear()
         self._cursor_initialized = False
         self._last_active_image = None
@@ -2682,6 +2734,7 @@ class MainWindow(QMainWindow):
         )
         self._refresh_cursor_status()
         self._sync_slider()
+        self._refresh_streamline_overlays()
         self.viewer_3d.set_cursor(
             tuple(self.cursor[:3]),
             spacing=image.spacing_xyz,
@@ -2692,6 +2745,78 @@ class MainWindow(QMainWindow):
             self._refresh_3d()
         if self._maximized_plane is None:
             self._update_image_previews()
+
+    def _streamline_parameters_changed(self) -> None:
+        self._streamline_timer.stop()
+        self.streamlines.cancel()
+        self._streamline_dirty = True
+        self._refresh_streamline_overlays()
+        if self.streamline_panel.enabled.isChecked():
+            self._streamline_timer.start()
+
+    def _compute_streamlines(self, force: bool = False) -> None:
+        self._streamline_timer.stop()
+        panel = self.streamline_panel
+        if not panel.enabled.isChecked():
+            if force:
+                panel.enabled.setChecked(True)
+            else:
+                return
+        try:
+            sources = panel.selected_sources()
+            if any(source is None for source in sources):
+                raise ValueError(self._tr("stream_inputs"))
+            self._streamline_dirty = False
+            self.streamlines.request(sources, panel.config(), panel.slab.value(), self.cursor[3], force)
+        except ValueError as error:
+            self._streamline_dirty = True
+            self.streamlines.clear()
+            panel.set_progress(0, 0, str(error))
+        self._refresh_streamline_overlays()
+
+    def _clear_streamline_cache(self) -> None:
+        self._streamline_timer.stop()
+        self.streamline_panel.enabled.setChecked(False)
+        self.streamlines.clear_disk()
+        self._streamline_dirty = True
+        self.streamline_panel.set_progress(0, 0, self._tr("stream_cleared"))
+        self._refresh_streamline_overlays()
+
+    def _refresh_streamline_overlays(self) -> None:
+        panel = self.streamline_panel
+        reference, image = self.streamlines.reference, self.active_image
+        enabled = panel.enabled.isChecked() and not self._streamline_dirty
+        compatible = (enabled and reference is not None and image is not None
+                      and reference.spatially_compatible_with(image)
+                      and (self.streamlines.frame_count == 1
+                           or image.frame_count in (1, self.streamlines.frame_count)))
+        index = min(self.cursor[3], max(0, self.streamlines.frame_count - 1))
+        frame = self.streamlines.frames.get(index) if compatible else None
+        style = panel.display_style()
+        for plane, view in self.slice_views.items():
+            visible = frame is not None and panel.show_2d.isChecked()
+            view.streamline_overlay.setVisible(visible)
+            if visible:
+                fixed = PLANE_AXES[plane][2]
+                slice_index = self.cursor[fixed]
+                view.streamline_overlay.set_segments(
+                    frame.slices[plane].at(slice_index),
+                    key=(self.streamlines.signature, index, slice_index), **style,
+                )
+        if frame is not None and panel.show_3d.isChecked():
+            self.viewer_3d.set_streamlines(
+                frame, key=(self.streamlines.signature, index), scene_key=id(reference),
+                scene_bounds=self._mask_scene_bounds(reference),
+                width=style["width"], opacity=style["opacity"], speed_max=style["speed_max"],
+                speed_unit=panel.speed_unit(),
+            )
+        else:
+            self.viewer_3d.set_streamlines(None)
+        if enabled and reference is not None and image is not None and not compatible:
+            panel.status.setText(self._tr("stream_grid_mismatch"))
+        elif frame is not None and len(self.streamlines.frames) == self.streamlines.frame_count:
+            panel.set_progress(len(self.streamlines.frames), self.streamlines.frame_count,
+                               panel._progress[2])
 
     def _refresh_3d(
         self,
@@ -4406,5 +4531,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_unsaved_masks():
             event.ignore()
             return
+        self._streamline_timer.stop()
+        self.streamlines.shutdown()
         self.viewer_3d.close()
         event.accept()

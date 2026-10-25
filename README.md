@@ -26,6 +26,7 @@ SpatioTemporal Labeler is a cross-platform desktop editor for manual and semi-au
 - Add any number of user-edited label keyframes and interpolate every gap across the full periodic sequence in one undoable operation
 - Adjacent-frame temporal propagation using physical displacement, intensity matching, and label/threshold barriers
 - Synchronized 2D overlays and independently colored 3D label surfaces while navigating time
+- [Live 2D/3D streamline overlays](docs/streamlines.md) with selectable velocity components, anatomical directions, phase/VENC calibration, and cached projections for every spatial slice and time frame
 - Separate threshold-mask constraints with all-frame editing and threshold-bypass modes
 - Multiple image/label sequences with RAS-mapped previews and 3D-label-to-4D frame mapping
 - Metadata-preserving 3D/4D NRRD and NIfTI read/write
