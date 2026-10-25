@@ -6,7 +6,13 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Added distinct cached in-plane 2D streamlines and 3D slab projections, selectable seed masks and label values, optional trajectory confinement, and independent seed, integration-stop and display speed thresholds.
+- Added Grid/Random seeding with default Grid intervals of three voxel widths per axis, optional count caps, larger seed ranges, RK4/directional integration, minimum trajectory length and turn-angle controls.
+
 ### Changed
+
+- The interface now uses English only, removes language selectors, migrates legacy language preferences, and gives Streamlines its own curved-arrow toolbar icon.
+- Grouped streamline controls into Inputs, Seeds, Trace, 2D and Display tabs with English parameter tooltips; mask edits and undo now invalidate stale streamline results.
 
 ### Fixed
 

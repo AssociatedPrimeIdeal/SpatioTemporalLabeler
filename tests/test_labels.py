@@ -35,7 +35,7 @@ def test_label_definitions_round_trip_through_header():
 
 def test_english_is_available_as_default_interface_language():
     assert translate("en", "display_image") == "Display image"
-    assert translate("zh_CN", "display_image") == "显示图像"
+    assert translate("zh_CN", "display_image") == "Display image"
 
 
 def test_default_label_colors_do_not_repeat_in_uint8_range():

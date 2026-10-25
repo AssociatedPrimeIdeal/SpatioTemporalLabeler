@@ -29,7 +29,7 @@ class ImportSelectionDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.paths = paths
-        chinese = language == "zh_CN"
+        chinese = False
         self.setWindowTitle("导入文件" if chinese else "Import files")
         self.resize(720, min(560, 150 + 42 * len(paths)))
         layout = QVBoxLayout(self)

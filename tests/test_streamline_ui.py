@@ -11,7 +11,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
-from spatiotemporal_labeler.tools.streamlines import StreamlineConfig, project_all_slices
+from spatiotemporal_labeler.tools.streamlines import PlanarConfig, StreamlineConfig, project_all_slices
 from spatiotemporal_labeler.ui import MainWindow
 from spatiotemporal_labeler.ui import streamline_jobs as jobs
 from spatiotemporal_labeler.ui.streamline_jobs import StreamlineController, load_frame, save_frame, source_digest
@@ -118,6 +118,41 @@ def test_stale_generation_never_updates_current_frames(application, tmp_path):
     controller.shutdown()
 
 
+def test_planar_cache_and_mutable_mask_snapshot(application, tmp_path, monkeypatch):
+    sources = (sequence(10), sequence(0), sequence(0))
+    mask = sequence(0, "seed-mask", frames=1)
+    mask.data[2:6, 2:5, 1:4] = 2
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=3,
+                              seed_distribution="random", max_steps=4)
+    controller = StreamlineController(cache_dir=tmp_path)
+    calls = []
+    original = jobs.trace_planar_slices
+    def tracked(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(jobs, "trace_planar_slices", tracked)
+    try:
+        controller.request(sources, config, 0, seed_mask=mask, mask_labels=(2,), planar=PlanarConfig(True, 2))
+        mask.data.fill(0)  # A worker must continue using its own immutable snapshot.
+        wait_for(application, lambda: len(controller.frames) == 2)
+        assert len(calls) == 2
+        assert len(controller.frames[0].planar_slices["X-Y"].values) > 0
+        assert len(controller.frames[0].speeds) > 0
+        mask.data[2:6, 2:5, 1:4] = 2
+        controller.clear()
+        controller.request(sources, config, 0, seed_mask=mask, mask_labels=(2,), planar=PlanarConfig(True, 2))
+        wait_for(application, lambda: len(controller.frames) == 2)
+        assert len(calls) == 2
+        mask.data.fill(0)
+        controller.request(sources, config, 0, seed_mask=mask, mask_labels=(2,),
+                           mask_revision=1, planar=PlanarConfig(True, 2))
+        wait_for(application, lambda: len(controller.frames) == 2)
+        assert len(controller.frames[0].speeds) == 0
+        assert len(controller.frames[0].planar_slices["X-Y"].values) == 0
+    finally:
+        controller.shutdown()
+
+
 def test_panel_selects_named_defaults_and_preserves_manual_inputs(application, tmp_path):
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     panel = StreamlinePanel(settings)
@@ -125,13 +160,18 @@ def test_panel_selects_named_defaults_and_preserves_manual_inputs(application, t
     panel.set_sources(sources)
     assert panel.selected_sources() == (sources[1], sources[2], sources[0])
     assert panel.config().directions == ("F", "P", "L")
+    assert panel.config().seed_distribution == "grid"
+    assert panel.config().grid_spacing_voxels == 3
+    assert not panel.config().limit_grid_seeds
+    assert panel.seed_count.maximum() == 1000000
+    assert panel.tabs.count() == 5
     assert panel.units.currentIndex() == 0
     assert panel.speed_unit() == "source units"
     panel.sources[0].setCurrentIndex(panel.sources[0].findData(id(sources[3])))
     panel.set_sources(sources + [sequence(7, "extra")])
     assert panel.selected_sources()[0] is sources[3]
     panel.set_language("zh_CN")
-    assert panel.enabled.text() == "启用流线叠加"
+    assert panel.enabled.text() == "Enable streamline overlays"
     panel.units.setCurrentIndex(3)
     with pytest.raises(ValueError, match="positive VENC"):
         panel.config().validate()
@@ -140,6 +180,28 @@ def test_panel_selects_named_defaults_and_preserves_manual_inputs(application, t
     panel.config().validate()
     np.testing.assert_allclose(panel.config().component_scales, np.array([100, 150, 200]) / np.pi)
     panel.deleteLater()
+
+
+def test_legacy_language_setting_migrates_to_english_without_language_controls(application):
+    settings = QSettings()
+    previous = settings.value("language", None)
+    settings.setValue("language", "zh_CN")
+    window = MainWindow()
+    try:
+        assert window.language == "en"
+        assert settings.value("language") == "en"
+        assert window.image_source_label.text() == "Display image"
+        assert not hasattr(window, "language_menu")
+        window._set_language("zh_CN")
+        assert window.language == "en"
+        assert window.streamline_action.text() == "Streamlines"
+    finally:
+        window.close()
+        window.deleteLater()
+        if previous is None:
+            settings.remove("language")
+        else:
+            settings.setValue("language", previous)
 
 
 def test_vtk_geometry_is_ras_and_visibility_does_not_depend_on_labels(application):
@@ -190,6 +252,11 @@ def test_navigation_and_display_controls_never_request_integration(application, 
         assert window.slice_views["X-Y"].streamline_overlay.acceptedMouseButtons() == Qt.MouseButton.NoButton
         panel.width.set_value(2.5)
         panel._display_changed()
+        panel.display_min_speed.set_value(100)
+        panel._display_changed()
+        assert window.viewer_3d._streamline_actor.GetMapper().GetInput().GetNumberOfLines() == 0
+        panel.display_min_speed.set_value(0)
+        panel._display_changed()
         window.image_combo.setCurrentIndex(0)
         window.cursor[3] = 1
         window.refresh_views()
@@ -203,6 +270,55 @@ def test_navigation_and_display_controls_never_request_integration(application, 
         assert window.close_all_files()
         assert window.streamlines.frames == {}
         assert panel.selected_sources() == (None, None, None)
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_planar_ui_navigation_uses_cached_slices_and_mask_edits_invalidate(application, tmp_path, monkeypatch):
+    window = MainWindow()
+    window.streamlines.cache_dir = tmp_path
+    sources = [sequence(3, name) for name in ("flow_x", "flow_y", "flow_z")]
+    window.images.extend(sources)
+    for source in sources:
+        window.image_combo.addItem(source.display_name)
+    mask = sequence(1, "seg")
+    window.masks.append(mask)
+    window.mask_combo.addItem(mask.display_name)
+    panel = window.streamline_panel
+    panel.set_sources(sources)
+    panel.seed_mask.setCurrentIndex(panel.seed_mask.findData(id(mask)))
+    panel.distribution.setCurrentIndex(panel.distribution.findData("random"))
+    panel.seed_count.setValue(3)
+    panel.planar_seeds.setValue(3)
+    panel.max_steps.setValue(3)
+    panel.mode_2d.setCurrentIndex(panel.mode_2d.findData("planar"))
+    panel.enabled.setChecked(True)
+    window._compute_streamlines()
+    try:
+        wait_for(application, lambda: len(window.streamlines.frames) == 2)
+        assert window.streamlines.frames[0].planar_slices is not None
+        def no_work(*_args, **_kwargs):
+            raise AssertionError("Slice navigation started planar calculation")
+        monkeypatch.setattr(window.streamlines, "request", no_work)
+        monkeypatch.setattr(jobs, "trace_planar_slices", no_work)
+        signature = window.streamlines.signature
+        panel.mode_2d.setCurrentIndex(panel.mode_2d.findData("projection"))
+        panel.mode_2d.setCurrentIndex(panel.mode_2d.findData("planar"))
+        assert window.streamlines.signature == signature
+        assert not window._streamline_timer.isActive()
+        for z in range(sources[0].shape_xyz[2]):
+            window.cursor[2] = z
+            window.refresh_views()
+        previous = window._streamline_mask_revision
+        changed = []
+        monkeypatch.setattr(window, "_streamline_parameters_changed", lambda: changed.append(True))
+        window.viewer_3d.set_rendering_enabled(False)
+        window._refresh_3d(dirty_values={1})
+        assert changed == [True]
+        assert window._streamline_mask_revision == previous + 1
+        window._refresh_3d()
+        assert changed == [True]
     finally:
         window.close()
         window.deleteLater()

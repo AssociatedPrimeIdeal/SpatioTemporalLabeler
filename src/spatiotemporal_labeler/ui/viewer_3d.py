@@ -958,7 +958,7 @@ class Mask3DViewer(QWidget):
     def set_streamlines(
         self, frame=None, *, key=None, scene_key=None, scene_bounds=None,
         width: float = 1.5, opacity: float = 0.9, speed_max: float = 100.0,
-        speed_unit: str = "cm/s", render: bool = True,
+        speed_unit: str = "cm/s", min_speed: float = 0.0, render: bool = True,
     ) -> None:
         """Swap cached world-space line geometry independently of label meshes."""
         if frame is None:
@@ -976,8 +976,10 @@ class Mask3DViewer(QWidget):
                 self._streamline_actor.SetMapper(vtkPolyDataMapper())
                 self.renderer.AddActor(self._streamline_actor)
             mapper = self._streamline_actor.GetMapper()
-            if self._streamline_key != key:
-                vertices = frame.world_segments.reshape(-1, 3)
+            geometry_key = (key, float(min_speed))
+            if self._streamline_key != geometry_key:
+                selected = frame.speeds >= min_speed
+                vertices = frame.world_segments[selected].reshape(-1, 3)
                 points = vtkPoints()
                 points.SetData(numpy_to_vtk(np.ascontiguousarray(vertices), deep=True))
                 lines = vtkCellArray()
@@ -988,7 +990,7 @@ class Mask3DViewer(QWidget):
                 poly = vtkPolyData()
                 poly.SetPoints(points)
                 poly.SetLines(lines)
-                scalars = numpy_to_vtk(np.ascontiguousarray(frame.speeds), deep=True)
+                scalars = numpy_to_vtk(np.ascontiguousarray(frame.speeds[selected]), deep=True)
                 scalars.SetName("Streamline speed (cm/s)")
                 poly.GetCellData().SetScalars(scalars)
                 mapper.SetInputData(poly)
@@ -999,7 +1001,7 @@ class Mask3DViewer(QWidget):
                 for index, color in enumerate(speed_rgb(np.linspace(0, 1, 256))):
                     lut.SetTableValue(index, *map(float, color / 255.0), 1.0)
                 mapper.SetLookupTable(lut)
-                self._streamline_key = key
+                self._streamline_key = geometry_key
             mapper.GetInput().GetCellData().GetScalars().SetName(f"Streamline magnitude ({speed_unit})")
             mapper.SetScalarRange(0.0, max(float(speed_max), 1e-6))
             self._streamline_actor.GetProperty().SetLineWidth(width)

@@ -41,12 +41,12 @@ class StreamlineOverlay(QGraphicsObject):
         self.update()
 
     def set_segments(self, rows, *, key=None, width=1.5, opacity=0.9,
-                     speed_max=100.0, arrows=True) -> None:
+                     speed_max=100.0, arrows=True, min_speed=0.0) -> None:
         if rows is None:
             if self._signature is not None:
                 self.clear()
             return
-        signature = (key, width, opacity, speed_max, arrows)
+        signature = (key, width, opacity, speed_max, arrows, min_speed)
         if signature == self._signature:
             return
         self._signature = signature
@@ -60,6 +60,7 @@ class StreamlineOverlay(QGraphicsObject):
         painter = QPainter(picture)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rows = np.asarray(rows)
+        rows = rows[rows[:, 4] >= min_speed]
         if len(rows):
             bins = np.clip((rows[:, 4] / max(speed_max, 1e-6) * 15).astype(int), 0, 15)
             colors = speed_rgb(np.arange(16) / 15.0)

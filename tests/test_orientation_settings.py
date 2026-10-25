@@ -48,7 +48,9 @@ def test_orientation_dialog_previews_valid_camera_choices_and_restores_defaults(
     dialog.orientationSettingsChanged.connect(changes.append)
 
     assert dialog.orientation_values() == selected
-    assert dialog.tabs.tabText(1) == ("视图方向" if language == "zh_CN" else "View Orientation")
+    assert dialog.tabs.tabText(1) == "View Orientation"
+    assert dialog.values()[0] == "en"
+    assert not hasattr(dialog, "language_combo")
     dialog.camera_view.setCurrentIndex(dialog.camera_view.findData("H"))
     assert changes[-1].camera_view == "H"
     assert changes[-1].camera_up == "A"

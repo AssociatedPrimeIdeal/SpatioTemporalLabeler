@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from spatiotemporal_labeler.i18n import LANGUAGES, translate
+from spatiotemporal_labeler.i18n import translate
 from spatiotemporal_labeler.io import Sequence4D, is_supported_image_path
 from spatiotemporal_labeler.model import (
     EditCommand,
@@ -155,7 +155,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = QSettings()
-        self.language = str(self.settings.value("language", "en"))
+        self.language = "en"
         self.shortcuts = {
             key: str(self.settings.value(f"shortcuts/{key}", value))
             for key, value in DEFAULT_SHORTCUTS.items()
@@ -266,6 +266,7 @@ class MainWindow(QMainWindow):
         self._copied_frame_label_value: int | None = None
         self.streamlines = StreamlineController(self)
         self._streamline_dirty = True
+        self._streamline_mask_revision = 0
         self._streamline_timer = QTimer(self)
         self._streamline_timer.setSingleShot(True)
         self._streamline_timer.setInterval(300)
@@ -588,6 +589,7 @@ class MainWindow(QMainWindow):
         self.streamline_panel = StreamlinePanel(self.settings)
         self.streamline_panel.computationChanged.connect(self._streamline_parameters_changed)
         self.streamline_panel.displayChanged.connect(self._refresh_streamline_overlays)
+        self.streamline_panel.modeChanged.connect(self._streamline_mode_changed)
         self.streamline_panel.recalculateRequested.connect(lambda: self._compute_streamlines(force=True))
         self.streamline_panel.clearRequested.connect(self._clear_streamline_cache)
         scroll = QScrollArea()
@@ -750,7 +752,7 @@ class MainWindow(QMainWindow):
         self.display_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.toolbar.addWidget(self.display_button)
         self.streamline_action = self.streamline_dock.toggleViewAction()
-        self.streamline_action.setIcon(tool_icon("grow", "#287f9c"))
+        self.streamline_action.setIcon(tool_icon("streamlines", "#287f9c"))
         self.streamline_button = QToolButton()
         self.streamline_button.setDefaultAction(self.streamline_action)
         self.streamline_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -809,18 +811,6 @@ class MainWindow(QMainWindow):
         self.view_menu.addAction(self.interpolation_action)
         self.view_menu.addAction(self.display_action)
         self.view_menu.addAction(self.streamline_action)
-        self.language_menu = self.view_menu.addMenu("")
-        language_group = QActionGroup(self)
-        language_group.setExclusive(True)
-        self.language_actions: dict[str, QAction] = {}
-        for code, name in LANGUAGES.items():
-            action = QAction(name, self, checkable=True)
-            action.triggered.connect(
-                lambda checked, language=code: self._set_language(language) if checked else None
-            )
-            language_group.addAction(action)
-            self.language_menu.addAction(action)
-            self.language_actions[code] = action
         self.settings_action = QAction("", self)
         self.settings_action.triggered.connect(self._open_settings)
         self.edit_menu.addSeparator()
@@ -903,10 +893,8 @@ class MainWindow(QMainWindow):
             self.toolbar.setToolButtonStyle(style)
 
     def _set_language(self, language: str) -> None:
-        self.language = language if language in LANGUAGES else "en"
+        self.language = "en"
         self.settings.setValue("language", self.language)
-        if hasattr(self, "language_actions"):
-            self.language_actions[self.language].setChecked(True)
         self._retranslate_ui()
 
     def _retranslate_ui(self) -> None:
@@ -1007,7 +995,6 @@ class MainWindow(QMainWindow):
         self.file_menu.setTitle(self._tr("file"))
         self.edit_menu.setTitle(self._tr("edit"))
         self.view_menu.setTitle(self._tr("view"))
-        self.language_menu.setTitle(self._tr("language"))
         self.label_panel.set_language(self.language)
         self.threshold_panel.set_language(self.language)
         self.grow_panel.set_language(self.language)
@@ -1903,6 +1890,7 @@ class MainWindow(QMainWindow):
         self.streamline_panel.set_sources([])
         self.viewer_3d.set_streamlines(None)
         self.masks.clear()
+        self.streamline_panel.set_masks([])
         self._cursor_initialized = False
         self._last_active_image = None
         self._mask_labels.clear()
@@ -2406,6 +2394,7 @@ class MainWindow(QMainWindow):
         event.acceptProposedAction()
 
     def _active_mask_changed(self, _index: int) -> None:
+        self.streamline_panel.set_masks(self.masks)
         self._clear_stroke()
         self._cancel_pending_contour(silent=True)
         self._clear_lasso_overlays()
@@ -2746,6 +2735,15 @@ class MainWindow(QMainWindow):
         if self._maximized_plane is None:
             self._update_image_previews()
 
+    def _streamline_mode_changed(self) -> None:
+        panel = self.streamline_panel
+        if (panel.enabled.isChecked() and panel.mode_2d.currentData() == "planar"
+                and (not self.streamlines.frames
+                     or any(frame.planar_slices is None for frame in self.streamlines.frames.values()))):
+            self._streamline_parameters_changed()
+        else:
+            self._refresh_streamline_overlays()
+
     def _streamline_parameters_changed(self) -> None:
         self._streamline_timer.stop()
         self.streamlines.cancel()
@@ -2767,7 +2765,11 @@ class MainWindow(QMainWindow):
             if any(source is None for source in sources):
                 raise ValueError(self._tr("stream_inputs"))
             self._streamline_dirty = False
-            self.streamlines.request(sources, panel.config(), panel.slab.value(), self.cursor[3], force)
+            self.streamlines.request(
+                sources, panel.config(), panel.slab.value(), self.cursor[3], force,
+                seed_mask=panel.selected_mask(), mask_labels=panel.selected_mask_labels(),
+                mask_revision=self._streamline_mask_revision, planar=panel.planar_config(),
+            )
         except ValueError as error:
             self._streamline_dirty = True
             self.streamlines.clear()
@@ -2793,22 +2795,24 @@ class MainWindow(QMainWindow):
         index = min(self.cursor[3], max(0, self.streamlines.frame_count - 1))
         frame = self.streamlines.frames.get(index) if compatible else None
         style = panel.display_style()
+        planar_mode = panel.mode_2d.currentData() == "planar"
+        slice_sets = (frame.planar_slices if planar_mode else frame.slices) if frame is not None else None
         for plane, view in self.slice_views.items():
-            visible = frame is not None and panel.show_2d.isChecked()
+            visible = slice_sets is not None and panel.show_2d.isChecked()
             view.streamline_overlay.setVisible(visible)
             if visible:
                 fixed = PLANE_AXES[plane][2]
                 slice_index = self.cursor[fixed]
                 view.streamline_overlay.set_segments(
-                    frame.slices[plane].at(slice_index),
-                    key=(self.streamlines.signature, index, slice_index), **style,
+                    slice_sets[plane].at(slice_index),
+                    key=(self.streamlines.signature, index, slice_index, planar_mode), **style,
                 )
         if frame is not None and panel.show_3d.isChecked():
             self.viewer_3d.set_streamlines(
                 frame, key=(self.streamlines.signature, index), scene_key=id(reference),
                 scene_bounds=self._mask_scene_bounds(reference),
                 width=style["width"], opacity=style["opacity"], speed_max=style["speed_max"],
-                speed_unit=panel.speed_unit(),
+                speed_unit=panel.speed_unit(), min_speed=style["min_speed"],
             )
         else:
             self.viewer_3d.set_streamlines(None)
@@ -2824,6 +2828,9 @@ class MainWindow(QMainWindow):
         dirty_values: set[int] | frozenset[int] | None = None,
     ) -> None:
         mask = self.active_mask
+        if dirty_values is not None and mask is self.streamline_panel.selected_mask():
+            self._streamline_mask_revision += 1
+            self._streamline_parameters_changed()
         if mask is None:
             self.viewer_3d.set_mask(None)
             return

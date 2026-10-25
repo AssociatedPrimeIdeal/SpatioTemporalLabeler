@@ -5,8 +5,8 @@ import pytest
 
 from spatiotemporal_labeler.io import AxisTransform, Sequence4D
 from spatiotemporal_labeler.tools.streamlines import (
-    StreamlineCancelled, StreamlineConfig, project_all_slices,
-    trace_streamlines, validate_sources,
+    PlanarConfig, StreamlineCancelled, StreamlineConfig, project_all_slices,
+    trace_streamlines, trace_planar_slices, validate_sources,
 )
 
 
@@ -36,7 +36,7 @@ def test_manual_ras_mapping_units_and_length_limit():
     components = [np.full((20, 4, 4), v) for v in (0.5, 0, 0)]
     config = StreamlineConfig(directions=("R", "A", "H"), seed_count=1,
                               step_mm=0.4, max_steps=100, max_length_mm=3.0,
-                              min_speed=1, source_scale=100)
+                              min_speed=1, source_scale=100, seed_distribution="random")
     segments, speeds = trace_streamlines(components, (2, 1, 1), np.eye(3), config)
     delta = segments[:, 1] - segments[:, 0]
     assert np.all(delta[:, 0] > 0)
@@ -115,8 +115,99 @@ def test_sources_check_complete_grid_and_allow_only_single_frame_broadcast():
 @pytest.mark.parametrize("config", [
     StreamlineConfig(directions=("R", "L", "H")),
     StreamlineConfig(step_mm=0), StreamlineConfig(min_speed=float("nan")),
-    StreamlineConfig(max_steps=1001), StreamlineConfig(seed_count=0),
+    StreamlineConfig(max_steps=0), StreamlineConfig(seed_count=0),
 ])
 def test_invalid_parameters_fail_before_computation(config):
     with pytest.raises(ValueError):
         config.validate()
+
+
+def test_grid_defaults_are_exact_three_voxel_intervals_with_anisotropic_spacing():
+    components = [np.full((10, 10, 10), value) for value in (10, 0, 0)]
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=1,
+                              max_steps=1, step_mm=0.1, integration_direction="forward")
+    assert config.seed_distribution == "grid" and config.grid_spacing_voxels == 3
+    segments, _ = trace_streamlines(components, (1, 2, 3), np.eye(3), config)
+    assert len(segments) == 27  # Grid is not silently truncated to seed_count.
+    for axis, expected in enumerate(([1.5, 4.5, 7.5], [3, 9, 15], [4.5, 13.5, 22.5])):
+        np.testing.assert_allclose(np.unique(segments[:, 0, axis]), expected)
+    capped, _ = trace_streamlines(components, (1, 2, 3), np.eye(3),
+                                  replace(config, limit_grid_seeds=True, seed_count=5))
+    assert len(capped) == 5
+
+
+def test_random_accepts_more_than_two_thousand_actual_seeds():
+    components = [np.full((20, 20, 20), value) for value in (10, 0, 0)]
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=5000,
+                              max_steps=1, step_mm=0.01, integration_direction="forward",
+                              seed_distribution="random")
+    segments, _ = trace_streamlines(components, (1, 1, 1), np.eye(3), config)
+    assert len(segments) > 2000
+    repeated, _ = trace_streamlines(components, (1, 1, 1), np.eye(3), config)
+    np.testing.assert_array_equal(repeated, segments)
+
+
+def test_seed_only_mask_is_separate_from_trajectory_mask_and_speed_threshold():
+    components = [np.full((9, 7, 5), value) for value in (10, 0, 0)]
+    mask = np.zeros((9, 7, 5), bool)
+    mask[3, 3, 2] = True
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=1,
+                              max_steps=20, step_mm=0.2, integration_direction="forward",
+                              seed_distribution="random", min_speed=1)
+    unconstrained, _ = trace_streamlines(components, (1, 1, 1), np.eye(3), config, seed_mask=mask)
+    assert unconstrained[:, 1, 0].max() > 3.5
+    constrained, _ = trace_streamlines(components, (1, 1, 1), np.eye(3),
+                                      replace(config, constrain_to_mask=True), seed_mask=mask)
+    assert constrained[:, 1, 0].max() <= 3.5
+    rejected, _ = trace_streamlines(components, (1, 1, 1), np.eye(3),
+                                   replace(config, seed_min_speed=11), seed_mask=mask)
+    assert len(rejected) == 0
+
+
+def test_grid_seed_speed_threshold_uses_interpolated_value_at_actual_seed():
+    vx = np.full((4, 4, 4), 3.0)
+    vx[1] = -1.0
+    config = StreamlineConfig(directions=("R", "A", "H"), min_speed=0.1,
+                              seed_min_speed=2, max_steps=1, step_mm=0.1)
+    # The default grid seed is at x=1.5: interpolated speed 1, although
+    # its nearest voxel (x=2) has speed 3 and passes candidate selection.
+    segments, _ = trace_streamlines((vx, np.zeros_like(vx), np.zeros_like(vx)),
+                                    (1, 1, 1), np.eye(3), config)
+    assert len(segments) == 0
+
+
+def test_planar_integration_discards_normal_velocity_before_thresholds_and_color():
+    components = [np.full((8, 7, 6), value) for value in (3, 0, 100)]
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=2,
+                              max_steps=5, step_mm=0.2, min_speed=2,
+                              seed_distribution="random")
+    planar = trace_planar_slices(components, (1, 2, 3), np.eye(3), config, PlanarConfig(True, 4))
+    xy = planar["X-Y"].at(2)
+    assert len(xy)
+    np.testing.assert_allclose(xy[:, 4], 3)
+    np.testing.assert_allclose(xy[:, 3] - xy[:, 1], 0)
+    rejected = trace_planar_slices(components, (1, 2, 3), np.eye(3),
+                                   replace(config, min_speed=4), PlanarConfig(True, 4))
+    assert len(rejected["X-Y"].values) == 0
+    assert len(rejected["X-Z"].values) > 0
+    assert np.shares_memory(xy, planar["X-Y"].values)
+
+
+def test_rk4_tracks_a_circular_field_and_turn_limit_rejects_sharp_steps():
+    x, y, z = np.indices((12, 12, 5))
+    components = (-(y - 5), x - 5, np.zeros_like(z))
+    mask = np.zeros_like(z, bool)
+    mask[8, 5, 2] = True
+    config = StreamlineConfig(directions=("R", "A", "H"), seed_count=1,
+                              seed_distribution="random", step_mm=0.3, max_steps=10,
+                              max_length_mm=3, min_speed=0.1, integration_direction="forward",
+                              integrator="rk4")
+    segments, _ = trace_streamlines(components, (1, 1, 1), np.eye(3), config, seed_mask=mask)
+    expected = [5 + 3 * np.cos(1), 5 + 3 * np.sin(1), 2]
+    np.testing.assert_allclose(segments[-1, 1], expected, atol=5e-4)
+    rejected, _ = trace_streamlines(components, (1, 1, 1), np.eye(3),
+                                   replace(config, max_turn_degrees=1), seed_mask=mask)
+    assert len(rejected) == 0
+    short, _ = trace_streamlines(components, (1, 1, 1), np.eye(3),
+                                replace(config, max_steps=1, min_length_mm=1), seed_mask=mask)
+    assert len(short) == 0

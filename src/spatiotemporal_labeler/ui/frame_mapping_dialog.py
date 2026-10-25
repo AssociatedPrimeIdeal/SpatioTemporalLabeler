@@ -23,7 +23,7 @@ class FrameMappingDialog(QDialog):
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
-        chinese = language == "zh_CN"
+        chinese = False
         self.setWindowTitle("映射 3D 标签" if chinese else "Map 3D labels")
         layout = QVBoxLayout(self)
         layout.addWidget(

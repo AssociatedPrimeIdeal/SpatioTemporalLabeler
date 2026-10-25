@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 
 
 def tool_icon(name: str, color: str) -> QIcon:
@@ -56,6 +56,14 @@ def tool_icon(name: str, color: str) -> QIcon:
             painter.drawEllipse(QRectF(9, 9, 6, 6))
             painter.drawArc(QRectF(5, 5, 14, 14), 15 * 16, 240 * 16)
             painter.drawArc(QRectF(2.5, 2.5, 19, 19), 195 * 16, 210 * 16)
+        elif name == "streamlines":
+            for y in (6.0, 12.0, 18.0):
+                path = QPainterPath(QPointF(3, y))
+                path.cubicTo(QPointF(7, y - 4), QPointF(13, y + 4), QPointF(20, y))
+                painter.drawPath(path)
+                painter.drawPolyline(QPolygonF([
+                    QPointF(16.8, y - 1.8), QPointF(20, y), QPointF(17.8, y + 2.2),
+                ]))
         elif name == "stretch":
             painter.drawLine(QPointF(7, 4), QPointF(7, 20))
             painter.drawLine(QPointF(17, 4), QPointF(17, 20))

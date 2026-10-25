@@ -1937,7 +1937,9 @@ def test_3d_rendering_toggle_defaults_on_and_stops_surface_requests():
     assert len(refreshes) == 1
 
     window._set_language("zh_CN")
-    assert window.render_toggle.text() == "显示"
+    assert window.language == "en"
+    assert window.render_toggle.text() == "Show"
+    assert not any(action.text() in {"Language", "语言"} for action in window.view_menu.actions())
     finish_window(window, mask)
 
 

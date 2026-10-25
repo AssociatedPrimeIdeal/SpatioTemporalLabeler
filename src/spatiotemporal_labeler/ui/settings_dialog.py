@@ -22,8 +22,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from spatiotemporal_labeler.i18n import LANGUAGES
-
 from .render_settings import RenderSettings
 from .orientation_settings import ANATOMICAL_VECTORS, AXIS_DIRECTIONS, VIEW_AXES, OrientationSettings
 
@@ -151,7 +149,7 @@ class SettingsDialog(QDialog):
         orientation_settings: OrientationSettings | None = None,
     ) -> None:
         super().__init__(parent)
-        chinese = language == "zh_CN"
+        chinese = False
         render_settings = render_settings or RenderSettings()
         orientation_settings = orientation_settings or OrientationSettings()
         self.setWindowTitle("设置" if chinese else "Settings")
@@ -162,15 +160,8 @@ class SettingsDialog(QDialog):
 
         general_page = QWidget()
         form = QFormLayout(general_page)
-        self.language_combo = QComboBox()
-        for code, name in LANGUAGES.items():
-            self.language_combo.addItem(name, code)
-        self.language_combo.setCurrentIndex(
-            max(0, self.language_combo.findData(language))
-        )
-        form.addRow("语言" if chinese else "Language", self.language_combo)
-        form.addRow(QLabel("快捷键" if chinese else "Keyboard shortcuts"))
-        labels = SHORTCUT_LABELS["zh_CN" if chinese else "en"]
+
+        labels = SHORTCUT_LABELS["en"]
         self.shortcut_edits: dict[str, QKeySequenceEdit] = {}
         for key in DEFAULT_SHORTCUTS:
             editor = QKeySequenceEdit(QKeySequence(shortcuts.get(key, DEFAULT_SHORTCUTS[key])))
@@ -400,16 +391,14 @@ class SettingsDialog(QDialog):
         if len(assigned) != len(set(assigned)) or invalid_hold_key:
             QMessageBox.warning(
                 self,
-                "快捷键冲突" if self.language_combo.currentData() == "zh_CN" else "Shortcut conflict",
-                "每个操作需要使用不同的单组快捷键。"
-                if self.language_combo.currentData() == "zh_CN"
-                else "Each action must use a different single-chord shortcut.",
+                "Shortcut conflict",
+                "Each action must use a different single-chord shortcut.",
             )
             return
         self.accept()
 
     def values(self) -> tuple[str, dict[str, str]]:
-        return str(self.language_combo.currentData()), {
+        return "en", {
             key: editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
             for key, editor in self.shortcut_edits.items()
         }

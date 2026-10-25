@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -19,12 +19,12 @@ import numpy as np
 from PySide6.QtCore import QObject, QStandardPaths, QTimer, Signal
 
 from spatiotemporal_labeler.tools.streamlines import (
-    PLANES, SliceSegments, StreamlineCancelled, StreamlineConfig, StreamlineFrame,
-    project_all_slices, trace_streamlines, validate_sources,
+    PLANES, PlanarConfig, SliceSegments, StreamlineCancelled, StreamlineConfig, StreamlineFrame,
+    project_all_slices, trace_streamlines, trace_planar_slices, validate_sources,
 )
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 3
 DISK_BUDGET = 2 * 1024**3
 
 
@@ -88,6 +88,28 @@ def load_frame(path: Path, shape) -> StreamlineFrame:
     return StreamlineFrame(world, speeds, slices)
 
 
+def save_slice_sets(path: Path, slices) -> None:
+    arrays = {}
+    for plane, value in slices.items():
+        arrays[plane] = value.values
+        arrays[plane + "_offsets"] = value.offsets
+    _atomic_save(path, **arrays)
+
+
+def load_slice_sets(path: Path, shape):
+    result = {}
+    with np.load(path, allow_pickle=False) as saved:
+        for plane, (_, _, fixed) in PLANES.items():
+            values, offsets = saved[plane], saved[plane + "_offsets"]
+            if (values.ndim != 2 or values.shape[1] != 5
+                    or offsets.shape != (shape[fixed] + 1,)
+                    or offsets.dtype.kind not in "iu" or offsets[0] != 0
+                    or offsets[-1] != len(values) or np.any(np.diff(offsets) < 0)):
+                raise ValueError("Invalid cached planar slice index")
+            result[plane] = SliceSegments(values, offsets)
+    return result
+
+
 class StreamlineController(QObject):
     framesChanged = Signal()
     progressChanged = Signal(int, int, str)
@@ -129,12 +151,20 @@ class StreamlineController(QObject):
             self.framesChanged.emit()
 
     def request(self, sources, config: StreamlineConfig, slab_mm: float,
-                current_frame: int = 0, force: bool = False) -> None:
+                current_frame: int = 0, force: bool = False, *,
+                seed_mask=None, mask_labels=(), mask_revision=0,
+                planar: PlanarConfig = PlanarConfig()) -> None:
         if self._closed:
             return
         config.validate()
+        planar.validate()
         count = validate_sources(sources)
-        signature = (tuple(id(source) for source in sources), config, float(slab_mm))
+        if seed_mask is not None:
+            if (not sources[0].spatially_compatible_with(seed_mask)
+                    or seed_mask.frame_count not in (1, count)):
+                raise ValueError("Seed mask must share the flow grid and frame count (or be 3D).")
+        signature = (tuple(id(source) for source in sources), config, float(slab_mm),
+                     id(seed_mask), tuple(mask_labels), mask_revision, planar)
         if signature == self.signature and not force:
             return
         self.cancel()
@@ -145,15 +175,23 @@ class StreamlineController(QObject):
         self.framesChanged.emit()
         self._cancel = Event()
         generation, cancel = self._generation, self._cancel
+        # Snapshot mutable labels once per parameter/edit request. Workers never
+        # read live masks while brush gestures or undo modify their arrays.
+        mask_snapshot = None
+        if seed_mask is not None:
+            mask_snapshot = (np.isin(seed_mask.data, mask_labels) if mask_labels
+                             else seed_mask.data > 0)
         self.progressChanged.emit(0, count, "")
         order = [int(np.clip(current_frame, 0, count - 1))]
         order += [frame for frame in range(count) if frame != order[0]]
         self._future = self._executor.submit(
-            self._compute, generation, cancel, tuple(sources), config, float(slab_mm), order, force
+            self._compute, generation, cancel, tuple(sources), config, float(slab_mm),
+            order, force, mask_snapshot, planar,
         )
         self._timer.start()
 
-    def _compute(self, generation, cancel, sources, config, slab_mm, order, force):
+    def _compute(self, generation, cancel, sources, config, slab_mm, order, force,
+                 mask_snapshot, planar):
         cancelled = cancel.is_set
         disk_warning = ""
         try:
@@ -172,14 +210,21 @@ class StreamlineController(QObject):
                         raise StreamlineCancelled()
                     self._digests[id(source)] = (weakref.ref(source), digest)
                 digests.append(self._digests[id(source)][1])
-            trace_key = _key((CACHE_VERSION, digests, asdict(config)))
+            mask_key = (None if mask_snapshot is None else
+                        hashlib.sha256(memoryview(np.ascontiguousarray(mask_snapshot))).hexdigest())
+            trace_key = _key((CACHE_VERSION, digests, mask_key, asdict(config)))
             view_key = _key((trace_key, slab_mm))
+            planar_key = _key((CACHE_VERSION, "planar", digests, mask_key,
+                               asdict(replace(config, seed_count=planar.seed_count))))
             reference = sources[0]
             for frame_index in order:
                 if cancelled():
                     raise StreamlineCancelled()
                 view_path = self.cache_dir / f"view_{view_key}_{frame_index}.npz"
                 trace_path = self.cache_dir / f"trace_{trace_key}_{frame_index}.npz"
+                planar_path = self.cache_dir / f"planar_{planar_key}_{frame_index}.npz"
+                seed_frame = (None if mask_snapshot is None else
+                              mask_snapshot[..., min(frame_index, mask_snapshot.shape[3] - 1)])
                 frame = None
                 if disk_available and view_path.exists() and not force:
                     try:
@@ -201,7 +246,7 @@ class StreamlineController(QObject):
                                       for source in sources]
                         segments, speeds = trace_streamlines(
                             components, reference.spacing_xyz, reference.transform.direction_ras,
-                            config, cancelled,
+                            config, cancelled, seed_mask=seed_frame,
                         )
                         if disk_available:
                             try:
@@ -218,6 +263,26 @@ class StreamlineController(QObject):
                             save_frame(view_path, frame)
                         except OSError as error:
                             disk_warning = str(error)
+                if planar.enabled:
+                    planar_slices = None
+                    if disk_available and planar_path.exists() and not force:
+                        try:
+                            planar_slices = load_slice_sets(planar_path, reference.shape_xyz)
+                        except (OSError, ValueError, KeyError, EOFError, BadZipFile, ZlibError):
+                            pass
+                    if planar_slices is None:
+                        components = [source.data[..., min(frame_index, source.frame_count - 1)]
+                                      for source in sources]
+                        planar_slices = trace_planar_slices(
+                            components, reference.spacing_xyz, reference.transform.direction_ras,
+                            config, planar, cancelled, seed_mask=seed_frame,
+                        )
+                        if disk_available:
+                            try:
+                                save_slice_sets(planar_path, planar_slices)
+                            except OSError as error:
+                                disk_warning = str(error)
+                    frame = replace(frame, planar_slices=planar_slices)
                 if cancelled():
                     raise StreamlineCancelled()
                 self._queue.put((generation, "frame", (frame_index, frame)))
