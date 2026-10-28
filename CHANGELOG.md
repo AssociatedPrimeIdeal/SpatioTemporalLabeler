@@ -8,6 +8,14 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+### Fixed
+
+## 0.5.3 - 2026-10-29
+
+### Added
+
+### Changed
+
 - Changed the project license from GPL-3.0-only to MIT.
 
 ### Fixed
