@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, replace
 import hashlib
 import json
+from multiprocessing import get_context
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -20,7 +21,7 @@ from PySide6.QtCore import QObject, QStandardPaths, QTimer, Signal
 
 from spatiotemporal_labeler.tools.streamlines import (
     PLANES, PlanarConfig, SliceSegments, StreamlineCancelled, StreamlineConfig, StreamlineFrame,
-    project_all_slices, trace_streamlines, trace_planar_slices, validate_sources,
+    initialize_planar_worker, project_all_slices, trace_streamlines, trace_planar_slices, validate_sources,
 )
 
 
@@ -119,7 +120,8 @@ class StreamlineController(QObject):
     framesChanged = Signal()
     progressChanged = Signal(int, int, str)
 
-    def __init__(self, parent=None, cache_dir: Path | None = None) -> None:
+    def __init__(self, parent=None, cache_dir: Path | None = None, *,
+                 max_workers: int | None = None) -> None:
         super().__init__(parent)
         base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
         self.cache_dir = cache_dir or Path(base) / "streamlines-v1"
@@ -132,6 +134,8 @@ class StreamlineController(QObject):
         self._queue = Queue()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="streamlines")
         self._digests: dict[int, tuple[object, str]] = {}
+        cpu_count = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+        self._parallel_workers = min(4, max(1, cpu_count // 2 if max_workers is None else int(max_workers)))
         self._closed = False
         self._future = None
         self._timer = QTimer(self)
@@ -199,6 +203,8 @@ class StreamlineController(QObject):
                  mask_snapshot, planar):
         cancelled = cancel.is_set
         disk_warning = ""
+        process_pool = None
+        process_cancel = None
         try:
             try:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -278,9 +284,20 @@ class StreamlineController(QObject):
                     if planar_slices is None:
                         components = [source.data[..., min(frame_index, source.frame_count - 1)]
                                       for source in sources]
+                        # Small grids remain serial; larger requests reuse a
+                        # bounded spawn pool across frames, without copying 4D inputs.
+                        if (process_pool is None and self._parallel_workers > 1
+                                and int(np.prod(reference.shape_xyz)) >= 128_000):
+                            context = get_context("spawn")
+                            process_cancel = context.Event()
+                            process_pool = ProcessPoolExecutor(
+                                max_workers=self._parallel_workers, mp_context=context,
+                                initializer=initialize_planar_worker, initargs=(process_cancel,),
+                            )
                         planar_slices = trace_planar_slices(
                             components, reference.spacing_xyz, reference.transform.direction_ras,
                             config, planar, cancelled, seed_mask=seed_frame,
+                            executor=process_pool, max_pending=self._parallel_workers,
                         )
                         if disk_available:
                             try:
@@ -298,6 +315,11 @@ class StreamlineController(QObject):
             pass
         except Exception as error:
             self._queue.put((generation, "error", str(error)))
+        finally:
+            if process_cancel is not None:
+                process_cancel.set()
+            if process_pool is not None:
+                process_pool.shutdown(wait=True, cancel_futures=True)
 
     def _prune_disk(self) -> None:
         try:

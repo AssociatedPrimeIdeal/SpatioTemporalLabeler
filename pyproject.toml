@@ -7,7 +7,7 @@ name = "spatiotemporal-labeler"
 version = "0.5.2"
 description = "Cross-platform desktop editor for manual and semi-automatic 3D/4D medical image segmentation"
 readme = "README.md"
-license = "GPL-3.0-only"
+license = "MIT"
 authors = [{ name = "AssociatedPrimeIdeal" }]
 requires-python = ">=3.9"
 keywords = [

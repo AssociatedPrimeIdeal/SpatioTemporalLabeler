@@ -7,7 +7,7 @@
 [![CI](https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/actions/workflows/ci.yml/badge.svg)](https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/AssociatedPrimeIdeal/SpatioTemporalLabeler)](https://github.com/AssociatedPrimeIdeal/SpatioTemporalLabeler/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab)](https://www.python.org/)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 SpatioTemporal Labeler is a cross-platform desktop editor for manual and semi-automatic 3D/4D medical image segmentation. It supports dynamic and time-resolved MRI, including 4D flow MRI, in NIfTI and NRRD files, with linked spatial-temporal views, real-time 3D label rendering, temporal propagation, and metadata-preserving I/O.
 
@@ -124,4 +124,4 @@ Image and label sequences are normalized internally to canonical RAS `[X,Y,Z,T]`
 
 ## License
 
-SpatioTemporal Labeler is distributed under the [GNU General Public License v3.0](LICENSE).
+SpatioTemporal Labeler is distributed under the [MIT License](LICENSE).

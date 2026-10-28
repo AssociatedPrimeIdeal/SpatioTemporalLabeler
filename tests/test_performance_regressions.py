@@ -259,3 +259,46 @@ def test_loading_images_rebuilds_previews_once_per_activation(window, monkeypatc
         window.load_image(f"image-{index}.nrrd")
     assert len(calls) == 3
     assert len(window.image_previews._plots) == 2
+
+
+@pytest.mark.parametrize("plane", ["X-Y", "X-Z", "Y-Z", "X-T", "Y-T", "Z-T"])
+@pytest.mark.parametrize("all_frames", [False, True])
+def test_local_brush_recoloring_matches_full_overlays_through_undo(window, plane, all_frames):
+    from spatiotemporal_labeler.ui.slice_view import label_overlay
+
+    window.render_toggle.setChecked(False)
+    image = sequence(np.ones((12, 11, 9, 4), dtype=np.float32))
+    mask = sequence(np.zeros(image.data.shape, dtype=np.int16))
+    mask.data[0, 0, 0, :] = 2
+    window.images.append(image)
+    window.image_combo.addItem("image")
+    window.masks.append(mask)
+    window._mask_labels[id(mask)] = {value: default_label(value) for value in (1, 2)}
+    window.mask_combo.addItem("mask")
+    window.cursor = [6, 5, 4, 1]
+    if plane.endswith("-T"):
+        window.temporal_mode.setCurrentText(plane)
+    window._set_tool("brush")
+    window.brush_diameter.setValue(1.0)
+    window.all_frames_toggle.setChecked(all_frames)
+    window.refresh_views()
+    buffers = {name: view.mask_item.overlay.rgba for name, view in window.slice_views.items()}
+
+    def verify():
+        for name in (*window.slice_views, window.temporal_mode.currentText()):
+            data = window._array_plane(mask.data, name, None if name.endswith("-T") else window.cursor[3], window._plane_context(name))
+            expected = label_overlay(data, window.active_labels, global_opacity=window._global_label_opacity)
+            np.testing.assert_array_equal(window._view_for_plane(name).mask_item.image, expected.transpose(1, 0, 2))
+
+    window._stroke_started(plane, 2, 2)
+    verify()
+    window._stroke_moved(plane, 3, 2)
+    verify()
+    for name, buffer in buffers.items():
+        assert window.slice_views[name].mask_item.overlay.rgba is buffer
+    window._stroke_finished(plane, 4, 2)
+    verify()
+    window.undo()
+    verify()
+    window.redo()
+    verify()

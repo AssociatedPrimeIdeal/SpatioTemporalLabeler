@@ -10,6 +10,7 @@ on autoflow or PyVista. These are instantaneous streamlines, not pathlines.
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, wait
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -321,15 +322,103 @@ def trace_streamlines(
     return _integrate_field(field, spacing, direction, config, seed_mask, cancelled)
 
 
+_planar_worker_cancel = None
+
+
+def initialize_planar_worker(cancel) -> None:
+    """Install a spawn-safe cancellation event once in each CPU worker."""
+    global _planar_worker_cancel
+    _planar_worker_cancel = cancel
+
+
+def _planar_rows(world, mask, spacing, basis, projector, config, cancelled):
+    _check_cancel(cancelled)
+    if mask is not None and not np.any(mask):
+        return np.empty((0, 5), dtype=np.float32)
+    field = np.einsum("...c,dc->...d", world, projector).astype(np.float32)
+    segments, speeds = _integrate_field(field, spacing, basis, config, mask, cancelled)
+    return np.column_stack((segments.reshape(-1, 4), speeds)).astype(np.float32)
+
+
+def _trace_planar_batch(world, masks, spacing, basis, config):
+    cancelled = _planar_worker_cancel.is_set if _planar_worker_cancel is not None else lambda: False
+    projector = np.linalg.pinv(basis)
+    return [
+        _planar_rows(field, None if masks is None else masks[index],
+                     spacing, basis, projector, config, cancelled)
+        for index, field in enumerate(world)
+    ]
+
+
+def _parallel_planar_slices(world, spacing, direction, config, mask, cancelled,
+                            executor, max_pending):
+    shape = world.shape[:3]
+    rows = {plane: [None] * shape[fixed] for plane, (_, _, fixed) in PLANES.items()}
+
+    def tasks():
+        for plane, (h, v, fixed) in PLANES.items():
+            basis = direction[:, [h, v]]
+            planes = np.moveaxis(world, fixed, 0)
+            masks = None if mask is None else np.moveaxis(mask, fixed, 0)
+            # Bound serialized inputs to about 8 MiB per in-flight task.
+            plane_bytes = max(1, planes[0].nbytes)
+            batch_size = max(1, min(16, (8 * 1024**2) // plane_bytes))
+            for start in range(0, len(planes), batch_size):
+                _check_cancel(cancelled)
+                stop = start + batch_size
+                yield plane, start, (
+                    np.ascontiguousarray(planes[start:stop]),
+                    None if masks is None else np.ascontiguousarray(masks[start:stop]),
+                    spacing[[h, v]], basis, config,
+                )
+
+    iterator = iter(tasks())
+    pending = {}
+
+    def submit():
+        task = next(iterator, None)
+        if task is None:
+            return False
+        plane, start, arguments = task
+        pending[executor.submit(_trace_planar_batch, *arguments)] = (plane, start)
+        return True
+
+    try:
+        for _ in range(max(1, max_pending)):
+            if not submit():
+                break
+        while pending:
+            _check_cancel(cancelled)
+            completed, _ = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+            for future in completed:
+                plane, start = pending.pop(future)
+                batch = future.result()
+                rows[plane][start:start + len(batch)] = batch
+                submit()
+    finally:
+        for future in pending:
+            future.cancel()
+    result = {}
+    for plane, values in rows.items():
+        lengths = np.fromiter((len(value) for value in values), dtype=np.int64)
+        offsets = np.empty(len(values) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(lengths, out=offsets[1:])
+        result[plane] = SliceSegments(np.concatenate(values), offsets)
+    return result
+
+
 def trace_planar_slices(
     components, spacing, direction, config: StreamlineConfig, planar: PlanarConfig,
     cancelled: Callable[[], bool] = lambda: False, *, seed_mask=None,
+    executor=None, max_pending: int = 4,
 ) -> dict[str, SliceSegments]:
     """Cache independent in-plane streamlines on every XY/XZ/YZ slice.
 
     Project the physical vector onto the slice's tangent basis, discarding its
     normal component before seeding, termination, integration, and coloring.
     A large through-plane speed cannot create spurious in-plane streamlines.
+    Optional CPU workers preserve the serial slice and seed ordering.
     """
     config.validate()
     planar.validate()
@@ -338,25 +427,23 @@ def trace_planar_slices(
     spacing = np.asarray(spacing, dtype=float)
     direction = np.asarray(direction, dtype=float)
     planar_config = replace(config, seed_count=planar.seed_count)
+    if executor is not None:
+        return _parallel_planar_slices(
+            world, spacing, direction, planar_config, seed_mask, cancelled,
+            executor, max_pending,
+        )
     result = {}
     for plane, (h, v, fixed) in PLANES.items():
         basis = direction[:, [h, v]]
         projector = np.linalg.pinv(basis)
         values, offsets = [], [0]
         for index in range(shape[fixed]):
-            _check_cancel(cancelled)
             selection = [slice(None)] * 3
             selection[fixed] = index
             selection = tuple(selection)
             mask = None if seed_mask is None else seed_mask[selection]
-            if mask is not None and not np.any(mask):
-                values.append(np.empty((0, 5), dtype=np.float32))
-                offsets.append(offsets[-1])
-                continue
-            field = np.einsum("...c,dc->...d", world[selection], projector).astype(np.float32)
-            segments, speeds = _integrate_field(field, spacing[[h, v]], basis,
-                                                planar_config, mask, cancelled)
-            rows = np.column_stack((segments.reshape(-1, 4), speeds)).astype(np.float32)
+            rows = _planar_rows(world[selection], mask, spacing[[h, v]], basis,
+                                projector, planar_config, cancelled)
             values.append(rows)
             offsets.append(offsets[-1] + len(rows))
         result[plane] = SliceSegments(np.concatenate(values), np.asarray(offsets, dtype=np.int64))

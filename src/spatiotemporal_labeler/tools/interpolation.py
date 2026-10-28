@@ -69,6 +69,23 @@ def interpolate_label_frames(
     path across the last frame back to frame zero. Labels outside
     ``label_values`` are preserved and block interpolated additions.
     """
+    return _interpolate_label_span(
+        data, start_frame, end_frame, label_values,
+        spacing_xyz=spacing_xyz, wrap=wrap, progress=progress,
+    )
+
+
+def _interpolate_label_span(
+    data: NDArray,
+    start_frame: int,
+    end_frame: int,
+    label_values: Iterable[int],
+    *,
+    spacing_xyz: tuple[float, float, float],
+    wrap: bool,
+    progress: Callable[[], bool] | None,
+    distance_cache: dict[tuple[int, int], NDArray | None] | None = None,
+) -> np.ndarray:
     source = np.asarray(data)
     if source.ndim != 4:
         raise ValueError(f"Label interpolation expects 3D+t data, got {source.shape}")
@@ -90,25 +107,30 @@ def interpolate_label_frames(
         raise ValueError("At least one frame is required between the keyframes")
 
     requested = tuple(sorted({int(value) for value in label_values if int(value) > 0}))
+    cache = {} if distance_cache is None else distance_cache
+
+    def distance(frame: int, value: int) -> NDArray | None:
+        key = (frame, value)
+        if key not in cache:
+            selection = source[..., frame] == value
+            cache[key] = (
+                _signed_distance(selection, spacing_xyz) if np.any(selection) else None
+            )
+        return cache[key]
+
     fields: list[tuple[int, NDArray[np.float64], NDArray[np.float64]]] = []
     missing: list[int] = []
     for value in requested:
         if progress is not None and not progress():
             raise RuntimeError("Label interpolation cancelled")
-        start_selection = source[..., start] == value
-        end_selection = source[..., end] == value
-        if not np.any(start_selection) and not np.any(end_selection):
+        first = distance(start, value)
+        last = distance(end, value)
+        if first is None and last is None:
             continue
-        if not np.any(start_selection) or not np.any(end_selection):
+        if first is None or last is None:
             missing.append(value)
             continue
-        fields.append(
-            (
-                value,
-                _signed_distance(start_selection, spacing_xyz),
-                _signed_distance(end_selection, spacing_xyz),
-            )
-        )
+        fields.append((value, first, last))
     if missing:
         values = ", ".join(str(value) for value in missing)
         raise ValueError(f"Labels must exist in both keyframes: {values}")
@@ -121,21 +143,35 @@ def interpolate_label_frames(
     for offset, frame in enumerate(frames):
         result[..., offset] = source[..., frame]
     selected_values = np.asarray([field[0] for field in fields], dtype=source.dtype)
-    result[np.isin(result, selected_values)] = 0
+    # Spatial work buffers do not grow with the number of selected labels.
+    # Strictly greater scores preserve argmax's first-label tie breaking.
+    winning_score = np.empty(source.shape[:3], dtype=np.float64)
+    scaled_last = np.empty_like(winning_score)
+    multiple = len(fields) > 1
+    score = np.empty_like(winning_score) if multiple else None
+    winning_label = np.empty(source.shape[:3], dtype=source.dtype) if multiple else None
+    better = np.empty(source.shape[:3], dtype=bool) if multiple else None
     span_float = float(span)
     for offset, frame in enumerate(frames):
         if progress is not None and not progress():
             raise RuntimeError("Label interpolation cancelled")
         alpha = float(offset + 1) / span_float
-        scores = np.stack(
-            [(1.0 - alpha) * first + alpha * last for _, first, last in fields],
-            axis=0,
-        )
-        winning_index = np.argmax(scores, axis=0)
-        winning_score = np.take_along_axis(scores, winning_index[None, ...], axis=0)[0]
-        available = result[..., offset] == 0
-        for index, value in enumerate(selected_values):
-            result[..., offset][available & (winning_index == index) & (winning_score >= 0)] = value
+        for index, (value, first, last) in enumerate(fields):
+            target = score if index else winning_score
+            np.multiply(first, 1.0 - alpha, out=target)
+            np.multiply(last, alpha, out=scaled_last)
+            np.add(target, scaled_last, out=target)
+            if index:
+                np.greater(score, winning_score, out=better)
+                np.copyto(winning_score, score, where=better)
+                np.copyto(winning_label, value, where=better)
+            elif multiple:
+                winning_label.fill(value)
+        output = result[..., offset]
+        available = (output == 0) | np.isin(output, selected_values)
+        output[available] = 0
+        np.copyto(output, winning_label if multiple else selected_values[0],
+                  where=available & (winning_score >= 0))
     return result
 
 
@@ -163,6 +199,8 @@ def interpolate_label_keyframes(
         raise ValueError("At least one frame is required between the keyframes")
 
     result = source.copy()
+    requested = tuple(label_values)
+    distance_cache: dict[tuple[int, int], NDArray | None] = {}
     segments = list(zip(frames, frames[1:]))
     if wrap:
         segments.append((frames[-1], frames[0]))
@@ -171,14 +209,23 @@ def interpolate_label_keyframes(
             span = (end - start) % source.shape[3] if wrap else end - start
             if span < 2:
                 continue
-            segment = interpolate_label_frames(
+            # Reuse shared endpoints, retaining at most three keyframes:
+            # the current pair and the first endpoint of a cyclic path.
+            retained = {start, end}
+            if wrap:
+                retained.add(frames[0])
+            for key in tuple(distance_cache):
+                if key[0] not in retained:
+                    del distance_cache[key]
+            segment = _interpolate_label_span(
                 source,
                 start,
                 end,
-                label_values,
+                requested,
                 spacing_xyz=spacing_xyz,
                 wrap=wrap,
                 progress=progress,
+                distance_cache=distance_cache,
             )
             path = (
                 tuple((start + offset) % source.shape[3] for offset in range(1, span))

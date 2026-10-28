@@ -460,3 +460,40 @@ def test_planar_ui_navigation_uses_cached_slices_and_mask_edits_invalidate(appli
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_process_precomputation_preserves_priority_broadcast_and_cache(application, tmp_path):
+    shape = (52, 50, 50)
+    transform = AxisTransform((0, 1, 2, 3), (False, False, False),
+                              (1, 1, 1), (0, 0, 0), np.eye(3))
+    sources = tuple(
+        Sequence4D(np.full((*shape, frames), value, np.float32), {}, transform)
+        for value, frames in ((12, 2), (5, 1), (8, 2))
+    )
+    mask = Sequence4D(np.zeros((*shape, 1), np.uint8), {}, transform)
+    mask.data[20:30, 20:30, 20:30] = 1
+    controller = StreamlineController(cache_dir=tmp_path, max_workers=2)
+    config = StreamlineConfig(seed_count=3, seed_distribution="random", max_steps=3)
+    planar = PlanarConfig(True, 2)
+    arrivals = []
+    controller.framesChanged.connect(lambda: arrivals.append(tuple(controller.frames)))
+    try:
+        controller.request(sources, config, 0, current_frame=1, seed_mask=mask, planar=planar)
+        mask.data.fill(0)
+        wait_for(application, lambda: len(controller.frames) == 2, timeout=30)
+        assert next(indices for indices in arrivals if indices)[0] == 1
+        assert len(controller.frames[0].planar_slices["X-Y"].values) > 0
+        expected = controller.frames[0].planar_slices["X-Y"].values.copy()
+        wait_for(application, lambda: controller._future.done(), timeout=30)
+        mask.data[20:30, 20:30, 20:30] = 1
+        controller.request(sources, config, 2, seed_mask=mask, planar=planar)
+        wait_for(application, lambda: len(controller.frames) == 2, timeout=30)
+        np.testing.assert_array_equal(controller.frames[0].planar_slices["X-Y"].values, expected)
+        controller.request(sources, replace(config, step_mm=0.5), 0, force=True, planar=planar)
+        wait_for(application, lambda: len(controller.frames) >= 1, timeout=30)
+        controller.cancel(clear=True)
+        wait_for(application, lambda: controller._future.done(), timeout=30)
+        controller._poll()
+        assert controller.frames == {}
+    finally:
+        controller.shutdown()

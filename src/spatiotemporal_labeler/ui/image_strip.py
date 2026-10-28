@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 from spatiotemporal_labeler.io import Sequence4D
 from spatiotemporal_labeler.model import LabelDefinition
 
-from .slice_view import AXIS_COLORS, label_overlay
-from .image_item import DisplayImageItem
+from .slice_view import AXIS_COLORS
+from .image_item import DisplayImageItem, LabelImageItem
 from .orientation_settings import OrientationSettings
 
 
@@ -73,7 +73,7 @@ class ThumbnailPlot(pg.PlotWidget):
         self._mask_style_signature: tuple[object, ...] | None = None
         self._locator_plane: str | None = None
         self.item = ThumbnailImageItem()
-        self.mask_item = DisplayImageItem()
+        self.mask_item = LabelImageItem()
         self.mask_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.mask_item.setZValue(10)
         self.locator_vertical = pg.InfiniteLine(angle=90, movable=False)
@@ -229,12 +229,7 @@ class ThumbnailPlot(pg.PlotWidget):
             return
         self._mask_data = np.array(data, copy=True)
         self._mask_style_signature = style_signature
-        self.mask_item.setImage(
-            label_overlay(data, labels, global_opacity=global_opacity).transpose(
-                1, 0, 2
-            ),
-            autoLevels=False,
-        )
+        self.mask_item.set_labels(data, labels, global_opacity=global_opacity)
         if self._data_rect is not None:
             self.mask_item.setRect(self._data_rect)
 

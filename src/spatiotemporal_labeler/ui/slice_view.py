@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 from spatiotemporal_labeler.model import LabelDefinition, default_label
 
 from .frame_labels import PHASE_LABEL_COLORS
-from .image_item import DisplayImageItem
+from .image_item import DisplayImageItem, LabelImageItem
+from .label_overlay import LabelOverlayBuffer
 from .orientation_settings import OrientationSettings
 from .streamline_overlay import StreamlineOverlay
 
@@ -249,22 +250,9 @@ def label_overlay(
     alpha: int = 124,
     global_opacity: float = 1.0,
 ) -> np.ndarray:
-    labels = np.asarray(mask)
-    rgba = np.zeros((*labels.shape, 4), dtype=np.uint8)
-    if definitions is None:
-        definitions = {
-            int(value): default_label(int(value)) for value in np.unique(labels) if int(value) > 0
-        }
-    for definition in definitions.values():
-        if not definition.visible:
-            continue
-        selected = labels == definition.value
-        rgba[..., :3][selected] = definition.color
-        effective_alpha = int(
-            round(alpha * np.clip(definition.opacity, 0.0, 1.0) * np.clip(global_opacity, 0.0, 1.0))
-        )
-        rgba[..., 3][selected] = effective_alpha
-    return rgba
+    return LabelOverlayBuffer().render(
+        mask, definitions, alpha=alpha, global_opacity=global_opacity,
+    )
 
 
 def threshold_overlay(
@@ -419,7 +407,7 @@ class SliceView(pg.PlotWidget):
         self.image_item = EditableImageItem()
         self.threshold_item = DisplayImageItem()
         self.applied_threshold_item = DisplayImageItem()
-        self.mask_item = DisplayImageItem()
+        self.mask_item = LabelImageItem()
         self.region_grow_preview_item = DisplayImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
@@ -694,13 +682,14 @@ class SliceView(pg.PlotWidget):
         labels: dict[int, LabelDefinition] | None = None,
         rect: QRectF | None = None,
         global_opacity: float = 1.0,
+        *,
+        dirty_bounds: tuple[slice, slice] | None = None,
     ) -> None:
         if mask is None:
             self.mask_item.clear()
             return
-        self.mask_item.setImage(
-            label_overlay(mask, labels, global_opacity=global_opacity).transpose(1, 0, 2),
-            autoLevels=False,
+        self.mask_item.set_labels(
+            mask, labels, global_opacity=global_opacity, dirty_bounds=dirty_bounds,
         )
         target_rect = rect if rect is not None else self._data_rect
         if target_rect is not None:
@@ -790,7 +779,7 @@ class TemporalView(pg.PlotWidget):
         self.image_item = EditableImageItem()
         self.threshold_item = DisplayImageItem()
         self.applied_threshold_item = DisplayImageItem()
-        self.mask_item = DisplayImageItem()
+        self.mask_item = LabelImageItem()
         self.contour_item = pg.PlotDataItem(
             pen=pg.mkPen("#ffe082", width=1.4),
             symbol="s",
@@ -1030,13 +1019,14 @@ class TemporalView(pg.PlotWidget):
         labels: dict[int, LabelDefinition] | None = None,
         rect: QRectF | None = None,
         global_opacity: float = 1.0,
+        *,
+        dirty_bounds: tuple[slice, slice] | None = None,
     ) -> None:
         if mask is None:
             self.mask_item.clear()
             return
-        self.mask_item.setImage(
-            label_overlay(mask, labels, global_opacity=global_opacity).transpose(1, 0, 2),
-            autoLevels=False,
+        self.mask_item.set_labels(
+            mask, labels, global_opacity=global_opacity, dirty_bounds=dirty_bounds,
         )
         target_rect = rect if rect is not None else self._data_rect
         if target_rect is not None:

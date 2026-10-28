@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from multiprocessing import freeze_support
 import sys
 from pathlib import Path
 
@@ -68,6 +69,7 @@ def startup_files(arguments: argparse.Namespace) -> tuple[list[Path], list[Path]
 
 
 def main(argv: list[str] | None = None) -> int:
+    freeze_support()
     arguments = build_parser().parse_args(argv)
     application = QApplication(sys.argv[:1])
     application.setApplicationName("SpatioTemporal Labeler")

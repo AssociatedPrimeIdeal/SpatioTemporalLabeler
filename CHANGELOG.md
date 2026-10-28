@@ -8,7 +8,15 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Changed
 
+- Changed the project license from GPL-3.0-only to MIT.
+
 ### Fixed
+
+### Performance
+
+- Reuse label-color buffers and recolor only brush-affected regions in linked views.
+- Reuse shared keyframe distance fields and avoid stacking per-label interpolation scores.
+- Compute large planar streamline requests with bounded CPU processes while preserving cached geometry, cancellation and deterministic slice ordering.
 
 ## 0.5.2 - 2026-10-26
 

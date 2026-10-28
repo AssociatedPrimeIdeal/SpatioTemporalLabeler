@@ -87,3 +87,53 @@ def test_multiple_keyframes_require_ascending_unique_indices():
         interpolate_label_keyframes(data, [2, 0], [1])
     with pytest.raises(ValueError, match="unique"):
         keyframe_intermediate_frames([0, 0], 4)
+
+
+@pytest.mark.parametrize("wrap, expected_calls", [(False, 6), (True, 6)])
+def test_shared_keyframe_distance_fields_are_computed_once(monkeypatch, wrap, expected_calls):
+    from spatiotemporal_labeler.tools import interpolation
+
+    data = np.zeros((12, 11, 3, 9), dtype=np.uint8)
+    for frame in (0, 3, 6):
+        data[2:5, 2:5, 1, frame] = 1
+        data[7:10, 6:9, 1, frame] = 2
+    calls = []
+    original = interpolation._signed_distance
+
+    def tracked(selection, spacing):
+        calls.append(1)
+        return original(selection, spacing)
+
+    monkeypatch.setattr(interpolation, "_signed_distance", tracked)
+    result = interpolate_label_keyframes(data, [0, 3, 6], iter([1, 2]), wrap=wrap)
+    assert len(calls) == expected_calls
+    assert np.array_equal(result[..., (0, 3, 6)], data[..., (0, 3, 6)])
+    assert np.any(result[..., 4] == 2)  # An iterator must cover every span.
+
+
+def test_streamed_label_scores_preserve_first_label_ties_and_barriers(monkeypatch):
+    from spatiotemporal_labeler.tools import interpolation
+
+    data = np.zeros((4, 4, 1, 3), dtype=np.uint16)
+    data[0, 0, 0, (0, 2)] = 1
+    data[1, 1, 0, (0, 2)] = 2
+    data[2, 2, 0, 1] = 9
+    monkeypatch.setattr(interpolation, "_signed_distance", lambda *args: np.ones((4, 4, 1)))
+    result = interpolate_label_frames(data, 0, 2, [2, 1])
+    assert result[2, 2, 0, 0] == 9
+    assert np.all(result[..., 0][data[..., 1] != 9] == 1)
+
+
+def test_interpolation_can_cancel_after_reusing_an_endpoint():
+    data = np.zeros((7, 7, 1, 7), dtype=np.uint8)
+    data[2:5, 2:5, 0, (0, 3, 6)] = 1
+    calls = []
+
+    def progress():
+        calls.append(1)
+        return len(calls) < 4
+
+    before = data.copy()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        interpolate_label_keyframes(data, [0, 3, 6], [1], progress=progress)
+    np.testing.assert_array_equal(data, before)

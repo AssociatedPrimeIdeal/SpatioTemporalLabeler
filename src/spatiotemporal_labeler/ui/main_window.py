@@ -3503,6 +3503,7 @@ class MainWindow(QMainWindow):
         radius_mm = self.brush_diameter.value() / 2.0
         start_h, start_v = self._contour[-1] if self._contour else (h, v)
         points = raster_line((start_h, start_v), (h, v))
+        dirty_bounds = None
         for plane_data, allowed in zip(planes, allowed_planes):
             for target_point in points:
                 affected = operation(
@@ -3514,12 +3515,19 @@ class MainWindow(QMainWindow):
                     allowed=allowed,
                 )
                 if affected is not None:
-                    self._include_stroke_bounds(plane, affected)
+                    bounds = self._include_stroke_bounds(plane, affected)
+                    dirty_bounds = bounds if dirty_bounds is None else tuple(
+                        slice(min(old.start, new.start), max(old.stop, new.stop))
+                        for old, new in zip(dirty_bounds, bounds)
+                    )
         if not self._contour or self._contour[-1] != (h, v):
             self._contour.append((h, v))
-        self._refresh_stroke_overlays()
+        if dirty_bounds is not None:
+            self._refresh_stroke_overlays(dirty_bounds)
 
-    def _refresh_stroke_overlays(self) -> None:
+    def _refresh_stroke_overlays(
+        self, spatial_bounds: tuple[slice, slice, slice] | None = None,
+    ) -> None:
         mask = self._stroke_mask
         if mask is None:
             return
@@ -3527,18 +3535,37 @@ class MainWindow(QMainWindow):
         visible_planes = (*PLANE_AXES, self.temporal_mode.currentText())
         for plane in visible_planes:
             frame = None if plane in TEMPORAL_AXES else self._stroke_frame
-            mask_plane = self._array_plane(
-                mask.data, plane, frame, self._plane_context(plane)
-            )
+            context = self._plane_context(plane)
+            region = None
+            if spatial_bounds is not None:
+                if plane in PLANE_AXES:
+                    horizontal, vertical, fixed = PLANE_AXES[plane]
+                    if not spatial_bounds[fixed].start <= context[0] < spatial_bounds[fixed].stop:
+                        continue
+                    region = (spatial_bounds[horizontal], spatial_bounds[vertical])
+                else:
+                    axis = TEMPORAL_AXES[plane]
+                    fixed_axes = (index for index in range(3) if index != axis)
+                    if any(
+                        not spatial_bounds[index].start <= position < spatial_bounds[index].stop
+                        for index, position in zip(fixed_axes, context)
+                    ):
+                        continue
+                    region = (
+                        spatial_bounds[axis],
+                        slice(min(self._stroke_frames), max(self._stroke_frames) + 1),
+                    )
+            mask_plane = self._array_plane(mask.data, plane, frame, context)
             self._view_for_plane(plane).set_mask_overlay(
-                mask_plane, labels, global_opacity=self._global_label_opacity
+                mask_plane, labels, global_opacity=self._global_label_opacity,
+                dirty_bounds=region,
             )
         if self._maximized_plane is None:
             self._update_image_previews(labels_only=True)
 
     def _include_stroke_bounds(
         self, plane: str, affected: tuple[slice, slice]
-    ) -> None:
+    ) -> tuple[slice, slice, slice]:
         horizontal, vertical = affected
         context = self._stroke_context
         if plane == "X-Y":
@@ -3567,11 +3594,12 @@ class MainWindow(QMainWindow):
             )
         if self._stroke_bounds is None:
             self._stroke_bounds = bounds
-            return
-        self._stroke_bounds = tuple(
-            slice(min(current.start, update.start), max(current.stop, update.stop))
-            for current, update in zip(self._stroke_bounds, bounds)
-        )
+        else:
+            self._stroke_bounds = tuple(
+                slice(min(current.start, update.start), max(current.stop, update.stop))
+                for current, update in zip(self._stroke_bounds, bounds)
+            )
+        return bounds
 
     def _confirm_contour(self, plane: str) -> None:
         pending = self._pending_contour
