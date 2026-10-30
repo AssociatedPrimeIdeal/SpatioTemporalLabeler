@@ -758,6 +758,139 @@ def test_threshold_apply_creates_one_toggleable_replaceable_special_label():
     finish_window(window, mask)
 
 
+def test_threshold_context_menu_creates_a_saved_all_frame_label_with_sparse_undo(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMenu
+    from spatiotemporal_labeler.model import labels_from_sequence
+
+    def fail_dialog(_parent, title, message):
+        raise AssertionError(f"{title}: {message}")
+
+    monkeypatch.setattr(QMessageBox, "critical", fail_dialog)
+
+    image_data = np.zeros((5, 4, 2, 3), dtype=np.float32)
+    image_data[1:3, :, :, 0] = 10
+    image_data[2:4, :, :, 1] = 10
+    image_data[3:5, :, :, 2] = 10
+    initial = np.zeros(image_data.shape, dtype=np.int16)
+    initial[1, 0, 0, 0] = 1
+    initial[2, 1, 0, 1] = 7
+    window, _image, mask = make_window(image_data, initial.copy())
+    window._mask_labels[id(mask)] = {value: default_label(value) for value in (1, 2, 7)}
+    window.threshold_panel.set_bounds(5, 10)
+    window._apply_threshold_mask()
+    applied = window._applied_threshold_mask.copy()
+    # The applied snapshot is independent of the live candidate and checkbox.
+    window.threshold_panel.set_bounds(0, 0)
+    window._threshold_visibility_changed(False)
+    window.threshold_bypass_toggle.setChecked(True)
+    window._sync_label_panel()
+    window.label_panel.list_widget.doItemsLayout()
+    item = next(window.label_panel.list_widget.item(row)
+                for row in range(window.label_panel.list_widget.count())
+                if window.label_panel.list_widget.item(row).data(Qt.ItemDataRole.UserRole)
+                == THRESHOLD_MASK_ITEM)
+    position = window.label_panel.list_widget.visualItemRect(item).center()
+    triggered = []
+
+    errors = []
+
+    def choose_create():
+        menu = window.label_panel.findChildren(QMenu)[-1]
+        try:
+            action = next(action for action in menu.actions() if action.text() == "Create label")
+            action.trigger()
+            triggered.append(True)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            menu.close()
+
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, choose_create)
+    window.label_panel._show_label_menu(position)
+    assert errors == []
+    assert triggered == [True]
+    expected = initial.copy()
+    changed = applied & (initial == 0)
+    expected[changed] = 3
+    assert np.array_equal(mask.data, expected)
+    assert mask.data.dtype == np.int16
+    assert window.active_label_value == 3
+    assert window.active_labels[3].name == "Label 3"
+    assert mask.dirty
+    assert len(window._undo_stack) == 1
+    assert window._undo_stack[0].flat_indices.size == np.count_nonzero(changed)
+    assert np.array_equal(window._applied_threshold_mask, applied)
+    assert not window._applied_threshold_visible
+
+    # Use the normal UI save path, including label metadata serialization.
+    mask.path = tmp_path / "converted.seg.seq.nrrd"
+    assert window.save_mask()
+    loaded = Sequence4D.load(mask.path)
+    assert np.array_equal(loaded.data, expected)
+    assert loaded.data.dtype == np.int16
+    assert labels_from_sequence(loaded)[3] == window.active_labels[3]
+
+    window.undo()
+    assert np.array_equal(mask.data, initial)
+    assert 3 in window.active_labels  # Label definitions follow ordinary add-label behavior.
+    window.redo()
+    assert np.array_equal(mask.data, expected)
+    assert np.array_equal(window._applied_threshold_mask, applied)
+    finish_window(window, mask)
+
+
+def test_threshold_label_conversion_is_a_noop_for_empty_or_fully_occupied_selection():
+    image_data = np.ones((3, 3, 2, 2), dtype=np.float32)
+    window, image, mask = make_window(image_data, np.zeros(image_data.shape, dtype=np.uint8))
+    window._applied_threshold_image = image
+    window._applied_threshold_mask = np.zeros(image_data.shape, dtype=bool)
+    window._create_label_from_threshold()
+    assert set(window.active_labels) == {1, 2}
+    assert not window._undo_stack
+    assert not mask.dirty
+
+    mask.data[:] = 2
+    window._applied_threshold_mask[:] = True
+    window._create_label_from_threshold()
+    assert np.all(mask.data == 2)
+    assert set(window.active_labels) == {1, 2}
+    assert not window._undo_stack
+    assert not mask.dirty
+    finish_window(window, mask)
+
+
+def test_threshold_label_conversion_refuses_exhausted_dtype_without_overflow():
+    image_data = np.ones((3, 3, 2, 2), dtype=np.float32)
+    window, image, mask = make_window(image_data, np.zeros(image_data.shape, dtype=np.int8))
+    window._mask_labels[id(mask)] = {value: default_label(value) for value in range(1, 128)}
+    window._applied_threshold_image = image
+    window._applied_threshold_mask = np.ones(image_data.shape, dtype=bool)
+    window._create_label_from_threshold()
+    assert not np.any(mask.data)
+    assert len(window.active_labels) == 127
+    assert not window._undo_stack
+    assert not mask.dirty
+    assert "No unused label values" in window.statusBar().currentMessage()
+    finish_window(window, mask)
+
+
+def test_threshold_label_conversion_requires_an_applied_snapshot_on_a_matching_grid():
+    image_data = np.ones((3, 3, 2, 2), dtype=np.float32)
+    window, image, mask = make_window(image_data, np.zeros(image_data.shape, dtype=np.uint8))
+    window._create_label_from_threshold()  # Live candidate alone cannot be converted.
+    assert not window._undo_stack
+    window._apply_threshold_mask()
+    # Same dimensions, different physical spacing: conversion must be rejected.
+    window._applied_threshold_image = make_sequence(image_data, spacing_xyz=(2, 1, 1))
+    window._create_label_from_threshold()
+    assert not np.any(mask.data)
+    assert set(window.active_labels) == {1, 2}
+    assert not window._undo_stack
+    assert not mask.dirty
+    finish_window(window, mask)
+
+
 def test_applied_threshold_survives_compatible_image_switch_until_replaced_or_deleted():
     image_data = np.zeros((7, 7, 1, 2), dtype=np.float32)
     image_data[3:, :, :, :] = 10.0

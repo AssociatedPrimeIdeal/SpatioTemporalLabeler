@@ -6,6 +6,8 @@ All notable changes to SpatioTemporal Labeler are documented in this file.
 
 ### Added
 
+- Create a new label from an applied threshold mask through its right-click menu, filling background voxels across all frames while preserving existing labels, with one-step undo/redo.
+
 ### Changed
 
 ### Fixed

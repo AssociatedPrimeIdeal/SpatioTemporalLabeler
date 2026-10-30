@@ -324,6 +324,7 @@ class MainWindow(QMainWindow):
             self._threshold_visibility_changed
         )
         self.label_panel.thresholdDeleteRequested.connect(self._delete_threshold_mask)
+        self.label_panel.thresholdCreateLabelRequested.connect(self._create_label_from_threshold)
         self.label_panel.thresholdOpacityChanged.connect(
             self._threshold_opacity_changed
         )
@@ -1548,6 +1549,51 @@ class MainWindow(QMainWindow):
         self._sync_label_panel()
         self.refresh_views()
         self.statusBar().showMessage(self._tr("threshold_applied"), 4000)
+
+    def _create_label_from_threshold(self) -> None:
+        mask = self.active_mask
+        selection = self._applied_threshold_mask
+        if mask is None or selection is None or not self._applied_threshold_matches_active_image():
+            return
+        definitions = self._labels_for(mask)
+        value = 1
+        maximum = int(np.iinfo(mask.data.dtype).max)
+        while value in definitions and value <= maximum:
+            value += 1
+        if value > maximum:
+            self.statusBar().showMessage(self._tr("threshold_label_full"), 5000)
+            return
+
+        # Copy the applied snapshot into background only, across every frame.
+        # Display visibility and the current drawing scope do not alter conversion.
+        indices = np.flatnonzero(selection & (mask.data == 0)).astype(np.intp, copy=False)
+        if not indices.size:
+            self.statusBar().showMessage(self._tr("threshold_label_empty"), 5000)
+            return
+        command = EditCommand(
+            mask,
+            indices,
+            np.zeros(indices.size, dtype=mask.data.dtype),
+            np.full(indices.size, value, dtype=mask.data.dtype),
+            self.cursor[3],
+        )
+        self._cancel_pending_contour(silent=True)
+        self._clear_lasso_overlays()
+        definitions[value] = default_label(value)
+        definitions[value].name = self._tr("label_default", value=value)
+        command.redo()
+        self._undo_stack.append(command)
+        self._undo_stack = self._undo_stack[-30:]
+        self._redo_stack.clear()
+        self.active_label_value = value
+        self._sync_label_panel()
+        self._update_mask_combo_text()
+        self.refresh_views()
+        self._refresh_3d(dirty_values={value})
+        self._update_enabled_state()
+        self.statusBar().showMessage(
+            self._tr("threshold_label_created", value=value, count=indices.size), 5000
+        )
 
     def _threshold_visibility_changed(self, visible: bool) -> None:
         self._applied_threshold_visible = bool(visible)

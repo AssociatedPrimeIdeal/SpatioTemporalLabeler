@@ -116,6 +116,8 @@ Enable **All time frames** to apply ordinary spatial gestures in every frame. Te
 
 Choose **All frames (current-frame threshold)** to filter a spatial brush, eraser, contour, or scissors gesture using the applied threshold in the frame where it starts, then apply the same region to every frame regardless of their thresholds. The threshold mask stays checked, and the complete edit is one undo step. You can assign an optional shortcut in Settings; tapping toggles the mode, while holding it through a stroke applies it temporarily.
 
+To turn a threshold selection into a label, apply the threshold mask, then right-click **Threshold mask** in the label list and choose **Create label**. This copies the applied selection into a new label across all frames, filling only background voxels and preserving existing labels. The new label is selected automatically and can be edited, renamed, recolored, and saved normally. Undo/redo restores the voxel changes in one step; undo leaves the new label empty. The threshold mask remains available independently, including when its checkbox is unchecked.
+
 Choose **Edit > Settings > View Orientation** to set each 2D view's left-to-right and bottom-to-top directions; image previews follow the same choices. X-Y, X-Z, and X-T default to L on screen left and R on screen right. The same page controls the 3D default viewing side, screen-up direction, and X/Y/Z anatomical arrows. Changes preview immediately, Cancel restores the previous views, and OK saves the preferences for the next launch. These display choices preserve image/label coordinates and saved spatial metadata.
 
 ## Data Contract

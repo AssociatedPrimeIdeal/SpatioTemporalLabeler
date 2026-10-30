@@ -41,6 +41,7 @@ class LabelPanel(QWidget):
     opacityChanged = Signal(int, float)
     thresholdVisibilityChanged = Signal(bool)
     thresholdDeleteRequested = Signal()
+    thresholdCreateLabelRequested = Signal()
     thresholdOpacityChanged = Signal(float)
     streamlineVisibilityChanged = Signal(bool)
     streamlineOpacityChanged = Signal(float)
@@ -253,6 +254,10 @@ class LabelPanel(QWidget):
         value = item.data(Qt.ItemDataRole.UserRole)
         opacity = float(item.data(OPACITY_ROLE) or 0.0)
         menu = QMenu(self)
+        if value == THRESHOLD_MASK_ITEM:
+            create_action = menu.addAction(translate(self.language, "threshold_create_label"))
+            create_action.triggered.connect(self.thresholdCreateLabelRequested)
+            menu.addSeparator()
         if value not in DISPLAY_ITEMS:
             rename_action = menu.addAction(translate(self.language, "rename_label"))
             rename_action.triggered.connect(
